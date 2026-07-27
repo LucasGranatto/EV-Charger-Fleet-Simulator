@@ -1,12 +1,12 @@
 # EVChargerSim
 
-Simulador de Charge Point OCPP 1.6J (mobilityhouse/ocpp) — simula o lado
+Simulador de Charge Point OCPP 1.6J (mobilityhouse/ocpp). Simula o lado
 carro/carregador de um ponto AC genérico, conectando no seu CSMS real via
 WebSocket, pra testar a lógica do servidor sem hardware físico.
 
 Roda direto no painel de controle web: liga sem nenhum charger, você
 adiciona/remove quantos quiser e controla cada um (start/stop/pause/
-resume/fault/clear/disconnect) dali, em tempo real — sem precisar saber
+resume/fault/clear/disconnect) por ele, em tempo real, sem precisar saber
 de antemão quantos vai usar nem reiniciar o processo pra mudar isso.
 
 ## Estrutura
@@ -69,8 +69,8 @@ start/stop/pause/resume/fault/clear/datatransfer/queue/authcache/locallist/disco
 
 Por padrão o terminal fica enxuto: só eventos de fato (start/stop/
 fault/reset/comandos remotos/etc.) aparecem em INFO. As linhas
-periódicas — Heartbeat e a amostra de MeterValues a cada ciclo (padrão
-30s) — ficam em DEBUG e não aparecem sozinhas, já que se repetem por
+periódicas, Heartbeat e a amostra de MeterValues a cada ciclo (padrão
+30s) ficam em DEBUG e não aparecem sozinhas, já que se repetem por
 charger a cada ciclo e em modo frota com vários chargers dominavam o
 terminal sem agregar informação nova.
 
@@ -123,10 +123,6 @@ Dois bugs reais foram encontrados e corrigidos nesse processo:
    rastreia e cancela essas tasks num `finally` ao sair de cena.
 
 ## Notas da revisão de frontend/logging
-
-- **Ícone de raio removido do cabeçalho** (`frontend/index.html`) — o
-  `brand-mark` (⚡) ao lado do título "EVChargerSim" foi retirado do
-  painel de controle web.
 - **Terminal menos verboso por padrão** — a linha de MeterValues do
   `send_meter_values_loop` (com ou sem sessão ativa), antes em INFO a
   cada ciclo, foi rebaixada para DEBUG, no mesmo nível do Heartbeat.
