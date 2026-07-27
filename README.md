@@ -65,6 +65,22 @@ python -m evchargersim --console CARREGADOR_02 --url ws://seu-csms:9000
 Console de texto disponível (`help` pra ver a lista completa de comandos:
 start/stop/pause/resume/fault/clear/datatransfer/queue/authcache/locallist/disconnect).
 
+## Verbosidade do terminal
+
+Por padrão o terminal fica enxuto: só eventos de fato (start/stop/
+fault/reset/comandos remotos/etc.) aparecem em INFO. As linhas
+periódicas — Heartbeat e a amostra de MeterValues a cada ciclo (padrão
+30s) — ficam em DEBUG e não aparecem sozinhas, já que se repetem por
+charger a cada ciclo e em modo frota com vários chargers dominavam o
+terminal sem agregar informação nova.
+
+Pra ver esse detalhamento completo (útil pra depurar tensão/corrente/
+SoC ciclo a ciclo), suba com `--verbose`:
+
+```bash
+python -m evchargersim --verbose --url ws://seu-csms:9001
+```
+
 ## Testando robustez do CSMS
 
 ```bash
@@ -105,3 +121,13 @@ Dois bugs reais foram encontrados e corrigidos nesse processo:
    próprio subiu (heartbeat/meter values/acumulador/chaos), que ficavam
    órfãos rodando pra sempre. Corrigido: `run_charger_lifecycle` agora
    rastreia e cancela essas tasks num `finally` ao sair de cena.
+
+## Notas da revisão de frontend/logging
+
+- **Ícone de raio removido do cabeçalho** (`frontend/index.html`) — o
+  `brand-mark` (⚡) ao lado do título "EVChargerSim" foi retirado do
+  painel de controle web.
+- **Terminal menos verboso por padrão** — a linha de MeterValues do
+  `send_meter_values_loop` (com ou sem sessão ativa), antes em INFO a
+  cada ciclo, foi rebaixada para DEBUG, no mesmo nível do Heartbeat.
+  Ver [Verbosidade do terminal](#verbosidade-do-terminal) acima.
