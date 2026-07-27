@@ -1,0 +1,191 @@
+"""
+evchargersim.config — configuração de uma instância (SimConfig) e parsing
+de argumentos de CLI (_parse_args).
+
+Precedência final de valores: CLI > --config (arquivo JSON) > defaults
+definidos abaixo em SimConfig. Ver SimConfig.load().
+"""
+
+import argparse
+import json
+from dataclasses import dataclass
+
+from ocpp.v16.enums import ChargePointErrorCode
+
+FAULT_CODE_MAP = {
+    "ground_failure":         ChargePointErrorCode.ground_failure,
+    "over_current_failure":   ChargePointErrorCode.over_current_failure,
+    "over_voltage":           ChargePointErrorCode.over_voltage,
+    "connector_lock_failure": ChargePointErrorCode.connector_lock_failure,
+    "power_meter_failure":    ChargePointErrorCode.power_meter_failure,
+    "weak_signal":            ChargePointErrorCode.weak_signal,
+    "other_error":            ChargePointErrorCode.other_error,
+}
+
+
+@dataclass
+class SimConfig:
+    """
+    Configuração de uma instância — fixa após o boot (ao contrário de
+    ChargerState, que muda a cada mensagem). Precedência: CLI > --config
+    (JSON) > defaults abaixo.
+    """
+    charge_point_id: str = "EVCHARGERSIM_01"
+    url: str = "ws://localhost:9001"
+    verbose: bool = False
+    connector_id: int = 1
+
+    meter_values_interval: int = 30
+    heartbeat_interval: int = 120
+
+    default_offered_amps: float = 16.0
+    simulation_speed: float = 1.0
+
+    battery_capacity_wh: float = 50_000.0
+    initial_soc_percent: float = 20.0
+
+    nominal_voltage: float = 225.0
+
+    # Timeout para chamadas críticas (Start/StopTransaction) — sem isso,
+    # um CSMS que trava sem responder deixa o simulador pendurado pra
+    # sempre. Ver _send_start_transaction / _send_stop_transaction.
+    call_timeout_seconds: float = 30.0
+
+    # ── Instabilidade de rede injetável (chaos) — tudo opt-in, 0/desligado
+    # por padrão. Ver README para exemplos de uso.
+    chaos_disconnect_interval_seconds: float = 0.0  # 0 = desabilitado
+    chaos_disconnect_jitter_seconds: float = 5.0
+    chaos_latency_min_ms: float = 0.0
+    chaos_latency_max_ms: float = 0.0
+    chaos_drop_rate: float = 0.0  # 0.0-1.0
+
+    # ── Modo frota (multi-charger) — ver --fleet no help da CLI. Quando
+    # fleet_ids não é vazio, main() ignora charge_point_id/connector_id
+    # únicos acima e sobe uma instância de EVChargerSim por ID da lista,
+    # todas compartilhando os demais campos deste SimConfig (url,
+    # intervalos, chaos, etc.) via dataclasses.replace(). O console de
+    # texto (input()) é desabilitado nesse modo — quem controla os
+    # chargers é o painel web em control_port.
+    fleet_ids: tuple = ()
+    control_port: int = 8080
+
+    # Modo legado: 1 charger, console de texto (input()), SEM painel
+    # web. Ver --console no help da CLI. Por padrão (False), rodar o
+    # programa sempre sobe o painel de controle web, mesmo sem nenhum
+    # charger pré-carregado — chargers são adicionados/removidos dali.
+    console: bool = False
+
+    @classmethod
+    def load(cls, argv=None) -> "SimConfig":
+        """Monta a config final combinando defaults, --config e flags de CLI."""
+        args = _parse_args(argv)
+        cfg = cls()
+
+        if args.config:
+            try:
+                with open(args.config, "r", encoding="utf-8") as fh:
+                    overrides = json.load(fh)
+            except (OSError, json.JSONDecodeError) as exc:
+                raise SystemExit(
+                    f"Não foi possível ler --config '{args.config}': {exc}"
+                )
+            unknown = set(overrides) - {f for f in cfg.__dataclass_fields__}
+            if unknown:
+                raise SystemExit(
+                    f"Chave(s) desconhecida(s) em '{args.config}': "
+                    f"{', '.join(sorted(unknown))}. Chaves válidas: "
+                    f"{', '.join(sorted(cfg.__dataclass_fields__))}"
+                )
+            for key, value in overrides.items():
+                setattr(cfg, key, value)
+
+        # CLI só sobrescreve o que foi de fato passado (senão o default
+        # do argparse sempre pisaria no valor vindo do --config).
+        cli_overrides = {
+            "charge_point_id": args.charge_point_id,
+            "url": args.url,
+            "connector_id": args.connector_id,
+            "meter_values_interval": args.meter_interval,
+            "heartbeat_interval": args.heartbeat_interval,
+            "default_offered_amps": args.default_amps,
+            "simulation_speed": args.sim_speed,
+            "battery_capacity_wh": args.battery_wh,
+            "initial_soc_percent": args.initial_soc,
+            "nominal_voltage": args.voltage,
+            "call_timeout_seconds": args.call_timeout,
+            "chaos_disconnect_interval_seconds": args.chaos_disconnect_interval,
+            "chaos_disconnect_jitter_seconds": args.chaos_disconnect_jitter,
+            "chaos_latency_min_ms": args.chaos_latency_min,
+            "chaos_latency_max_ms": args.chaos_latency_max,
+            "chaos_drop_rate": args.chaos_drop_rate,
+            "control_port": args.control_port,
+        }
+        for key, value in cli_overrides.items():
+            if value is not None:
+                setattr(cfg, key, value)
+        if args.verbose:
+            cfg.verbose = True
+        if args.console:
+            cfg.console = True
+        if args.fleet:
+            # IDs explícitos, na ordem digitada; espaços em volta de cada
+            # vírgula são tolerados ("CH01, CH02,CH03") e IDs vazios
+            # (vírgula duplicada/sobrando) são descartados.
+            cfg.fleet_ids = tuple(
+                cid.strip() for cid in args.fleet.split(",") if cid.strip()
+            )
+
+        return cfg
+
+
+def _parse_args(argv=None):
+    parser = argparse.ArgumentParser(
+        description="EVChargerSim — simulador standalone de Charge Point OCPP 1.6J.")
+    parser.add_argument("charge_point_id", nargs="?", default=None,
+                         help="ID do charge point (padrão: EVCHARGERSIM_01).")
+    parser.add_argument("--url", default=None,
+                         help="URL base do CSMS, sem o ID (padrão: ws://localhost:9001).")
+    parser.add_argument("--config", default=None,
+                         help="Arquivo JSON com valores padrão (ver SimConfig). CLI tem prioridade.")
+    parser.add_argument("--connector-id", type=int, default=None)
+    parser.add_argument("--meter-interval", type=int, default=None,
+                         help="Intervalo de MeterValues em segundos (padrão: 30).")
+    parser.add_argument("--heartbeat-interval", type=int, default=None,
+                         help="Intervalo inicial de Heartbeat em segundos (padrão: 120).")
+    parser.add_argument("--default-amps", type=float, default=None,
+                         help="Corrente ao iniciar sessão, antes do 1º SetChargingProfile (padrão: 16.0).")
+    parser.add_argument("--sim-speed", type=float, default=None,
+                         help="Fator de aceleração da simulação (padrão: 1.0 = tempo real).")
+    parser.add_argument("--battery-wh", type=float, default=None,
+                         help="Capacidade da bateria simulada em Wh (padrão: 50000).")
+    parser.add_argument("--initial-soc", type=float, default=None,
+                         help="SoC inicial de cada sessão, em %% (padrão: 20.0).")
+    parser.add_argument("--voltage", type=float, default=None,
+                         help="Tensão nominal de referência em V (padrão: 225.0).")
+    parser.add_argument("--call-timeout", type=float, default=None,
+                         help="Timeout (s) para Start/StopTransaction (padrão: 30.0).")
+    parser.add_argument("--chaos-disconnect-interval", type=float, default=None,
+                         help="Derruba o WebSocket a cada N segundos ± jitter (padrão: desabilitado).")
+    parser.add_argument("--chaos-disconnect-jitter", type=float, default=None,
+                         help="Variação (± segundos) em torno do intervalo acima (padrão: 5.0).")
+    parser.add_argument("--chaos-latency-min", type=float, default=None,
+                         help="Atraso mínimo artificial (ms) por mensagem (padrão: 0).")
+    parser.add_argument("--chaos-latency-max", type=float, default=None,
+                         help="Atraso máximo artificial (ms) por mensagem (padrão: 0).")
+    parser.add_argument("--chaos-drop-rate", type=float, default=None,
+                         help="Probabilidade (0.0–1.0) de perda simulada de mensagem (padrão: 0.0).")
+    parser.add_argument("--verbose", action="store_true",
+                         help="Mostra Heartbeat/GetConfiguration no terminal (padrão: silenciosos).")
+    parser.add_argument("--console", action="store_true",
+                         help="Modo legado: 1 charger (charge_point_id acima), console de texto, "
+                              "SEM painel web. Por padrão (sem esta flag) o programa sobe direto "
+                              "o painel de controle web e você adiciona/remove chargers por lá.")
+    parser.add_argument("--fleet", default=None,
+                         help="Lista de charge_point_id separados por vírgula (ex: CH01,CH02,CH03) "
+                              "pra já subir pré-carregados no painel web — opcional, você também "
+                              "pode adicionar chargers pelo próprio painel depois de ligar.")
+    parser.add_argument("--control-port", type=int, default=None,
+                         help="Porta HTTP do painel de controle web (padrão: 8080).")
+    return parser.parse_args(argv)
+
+
