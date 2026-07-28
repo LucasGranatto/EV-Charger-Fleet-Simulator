@@ -6,11 +6,15 @@ que ele consome, /api/state + /api/command (_make_control_handler), via
 start_control_server(), que sobe tudo numa ThreadingHTTPServer em thread
 separada.
 
-Só biblioteca padrão de propósito — nada de aiohttp ou outra dependência
+Só biblioteca padrão de propósito. nada de aiohttp ou outra dependência
 nova só pra isso. A ponte entre a thread do HTTP server e o event loop
 asyncio principal (onde vivem as instâncias de EVChargerSim) é feita via
 asyncio.run_coroutine_threadsafe(...).result(timeout=...) em cada
 requisição.
+
+/api/command/all executa um comando (connect/disconnect/pause/resume/
+etc.) em TODOS os chargers registrados de uma vez — usado pelas ações
+"todos" do painel. Ver broadcast_command() em orchestrator.main().
 """
 
 import asyncio
@@ -41,20 +45,24 @@ _STATIC_FILES = {
 
 
 def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logger: logging.Logger,
-                           spawn, remove):
+                           spawn, remove, broadcast):
     """
     Fábrica de classe do handler HTTP do painel de controle — precisa ser
     uma fábrica (em vez de uma classe direta) porque BaseHTTPRequestHandler
     não tem como receber argumentos extras no __init__ (o ThreadingHTTPServer
     o instancia sozinho por requisição); fechar `registry`/`loop`/`logger`/
-    `spawn`/`remove` no escopo aqui é o jeito de fazer todos chegarem até
-    o handler.
+    `spawn`/`remove`/`broadcast` no escopo aqui é o jeito de fazer todos
+    chegarem até o handler.
 
     `spawn`/`remove` são corotinas `async def (charge_point_id) -> str`
     (retornam mensagem de resultado, levantam ValueError em erro de uso —
     ex: ID duplicado ou inexistente) definidas em orchestrator.main() —
     passadas por aqui em vez de importadas, pra não criar um import
     circular (orchestrator já importa start_control_server deste módulo).
+
+    `broadcast` é a corotina `async def (cmd, args) -> dict` (também de
+    orchestrator.main()) que executa um comando em todos os chargers do
+    registry de uma vez — usada por POST /api/command/all.
     """
 
     class ControlPanelHandler(BaseHTTPRequestHandler):
@@ -101,6 +109,8 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
         def do_POST(self):
             if self.path == "/api/command":
                 self._handle_command()
+            elif self.path == "/api/command/all":
+                self._handle_command_all()
             elif self.path == "/api/chargers":
                 self._handle_add_charger()
             else:
@@ -175,15 +185,53 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 logger.exception(f"[PAINEL] erro executando comando '{cmd}' em '{charge_point_id}'")
                 self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
 
+        def _handle_command_all(self):
+            """
+            POST /api/command/all — {cmd, args} sem charge_point_id:
+            executa o mesmo comando em TODOS os chargers do registry de
+            uma vez (ações "conectar todos"/"desconectar todos"/"pausar
+            todos"/"retomar todos" do painel). Cada charger responde
+            (ou falha) independente dos demais — ver broadcast_command()
+            em orchestrator.main().
+            """
+            try:
+                payload = self._read_json_body()
+            except (ValueError, json.JSONDecodeError):
+                self._send_json({"ok": False, "message": "corpo inválido"}, status=400)
+                return
+
+            cmd = (payload.get("cmd") or "").lower()
+            args = payload.get("args") or []
+            if not cmd:
+                self._send_json({"ok": False, "message": "cmd vazio"}, status=400)
+                return
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(broadcast(cmd, args), loop)
+                results = future.result(timeout=20)
+            except Exception as exc:
+                logger.exception(f"[PAINEL] erro executando comando em massa '{cmd}'")
+                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+                return
+
+            if not results:
+                self._send_json({"ok": True, "message": "nenhum charger conectado ainda", "results": {}})
+                return
+            self._send_json({
+                "ok": True,
+                "message": f"'{cmd}' executado em {len(results)} charger(s).",
+                "results": results,
+            })
+
     return ControlPanelHandler
 
 
 
 def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventLoop,
-                          logger: logging.Logger, spawn, remove) -> ThreadingHTTPServer:
+                          logger: logging.Logger, spawn, remove, broadcast) -> ThreadingHTTPServer:
     """
     Sobe o painel web de controle numa ThreadingHTTPServer rodando em
-    thread separada — mantém o servidor de controle fora do event loop
+    thread separada e mantém o servidor de controle fora do event loop
     principal (onde rodam os N charge points) usando apenas a
     biblioteca padrão, sem puxar aiohttp ou outra dependência nova só
     pra isso.
@@ -197,12 +245,13 @@ def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventL
     `spawn`/`remove`: corotinas `async def (charge_point_id) -> str`
     que o painel usa pra adicionar/remover chargers em tempo real (ver
     orchestrator.main()).
+    `broadcast`: corotina `async def (cmd, args) -> dict` que executa
+    um comando em todos os chargers do registry de uma vez (ações
+    "todos" do painel — ver orchestrator.main()).
     """
-    handler_cls = _make_control_handler(registry, loop, logger, spawn, remove)
+    handler_cls = _make_control_handler(registry, loop, logger, spawn, remove, broadcast)
     server = ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="control-panel")
     thread.start()
     logger.info(f"[PAINEL] painel de controle web em http://localhost:{port}")
     return server
-
-
