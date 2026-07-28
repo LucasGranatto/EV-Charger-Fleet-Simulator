@@ -150,6 +150,31 @@ async function removeCharger(chargeId) {
   refresh();
 }
 
+// Dispara um comando em TODOS os chargers registrados de uma vez
+// (botões "Start"/"Stop"/"Pausar"/"Retomar"/"Desconectar" da
+// bulk-actions-row). O backend (/api/command/all) já isola falha de um
+// charger sem derrubar os demais — aqui só resume o resultado num
+// único toast em vez de um por charger, pra não inundar a tela com N
+// toasts de uma vez.
+async function sendBulkCommand(cmd, { args = [], confirmMessage } = {}) {
+  if (confirmMessage) {
+    const confirmed = await confirmDialog(confirmMessage);
+    if (!confirmed) return;
+  }
+  try {
+    const res = await fetch("/api/command/all", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ cmd, args }),
+    });
+    const data = await res.json();
+    toast(data.message || (data.ok ? "ok" : "erro"), data.ok ? "success" : "error");
+  } catch (e) {
+    toast(`Falha ao enviar comando em massa: ${e}`, "error");
+  }
+  refresh();
+}
+
 // ── Construção/atualização de cards (diff, não innerHTML) ───────────
 
 function displayStatus(c) {
@@ -370,6 +395,21 @@ document.getElementById("search-input").addEventListener("input", (e) => {
     el.style.display = (!currentFilter || id.toLowerCase().includes(currentFilter)) ? "" : "none";
   }
 });
+
+document.querySelector('[data-role="bulk-start"]').addEventListener("click", () => {
+  const idTag = document.getElementById("bulk-id-tag").value.trim() || "LOCAL_TAG";
+  sendBulkCommand("start", { args: [idTag] });
+});
+document.querySelector('[data-role="bulk-stop"]').addEventListener("click", () =>
+  sendBulkCommand("stop"));
+document.querySelector('[data-role="bulk-pause"]').addEventListener("click", () =>
+  sendBulkCommand("pause"));
+document.querySelector('[data-role="bulk-resume"]').addEventListener("click", () =>
+  sendBulkCommand("resume"));
+document.querySelector('[data-role="bulk-disconnect"]').addEventListener("click", () =>
+  sendBulkCommand("disconnect", {
+    confirmMessage: "Desconectar TODOS os chargers? Cada um reconecta sozinho em seguida, mas as conexões atuais serão encerradas agora.",
+  }));
 
 refresh();
 setInterval(refresh, 1500);
