@@ -307,7 +307,36 @@ async def main(argv=None):
             pass
         return f"charger '{charge_point_id}' removido"
 
-    start_control_server(registry, config.control_port, loop, dash_logger, spawn=spawn, remove=remove)
+    async def broadcast_command(cmd: str, args: list) -> dict:
+        """
+        Executa `cmd` em TODOS os chargers atualmente no registry, em
+        paralelo — usado pelas ações "todos" do painel (conectar/
+        desconectar/pausar/retomar todos de uma vez). Uma exceção
+        isolada em um charger vira só uma mensagem de erro na entrada
+        dele do dict de retorno, sem derrubar os demais.
+
+        Retorna {charge_point_id: mensagem}. Dict vazio se não há
+        nenhum charger registrado ainda (registry vazio).
+        """
+        if not registry:
+            return {}
+
+        async def _run_one(charge_point_id: str, cp) -> tuple[str, str]:
+            try:
+                return charge_point_id, await cp.execute_command(cmd, args)
+            except Exception as exc:
+                return charge_point_id, f"erro: {exc!r}"
+
+        # snapshot de .items() — evita RuntimeError se algum charger for
+        # removido do registry por outra requisição enquanto isso roda
+        pairs = list(registry.items())
+        results = await asyncio.gather(*(_run_one(cid, cp) for cid, cp in pairs))
+        return dict(results)
+
+    start_control_server(
+        registry, config.control_port, loop, dash_logger,
+        spawn=spawn, remove=remove, broadcast=broadcast_command,
+    )
 
     preloaded_ids = list(config.fleet_ids)
     _print_dashboard_banner(config, config.control_port, preloaded_ids)
@@ -318,5 +347,3 @@ async def main(argv=None):
     # disparados pelo painel web, não por um conjunto fixo de tasks
     # decidido na largada (ao contrário do antigo modo --fleet sozinho).
     await asyncio.Event().wait()
-
-
