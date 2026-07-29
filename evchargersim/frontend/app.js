@@ -93,7 +93,8 @@ async function sendCommand(chargeId, cmd, args) {
   } catch (e) {
     toast(`[${chargeId}] falha ao enviar comando: ${e}`, "error");
   }
-  refresh();
+  // Sem refresh() manual aqui — a mudança de estado chega sozinha pelo
+  // stream de /api/events assim que o backend processar o comando.
 }
 
 async function addOneCharger(chargeId) {
@@ -130,7 +131,8 @@ async function addCharger() {
     toast(`${okCount} adicionado(s), ${failed.length} falharam: ${failed.join(" · ")}`, "error");
   }
   if (okCount > 0) input.value = "";
-  refresh();
+  // Sem refresh() manual — /api/events mostra o(s) novo(s) charger(s)
+  // assim que ele(s) conectar(em) de verdade.
 }
 
 async function removeCharger(chargeId) {
@@ -147,7 +149,8 @@ async function removeCharger(chargeId) {
   } catch (e) {
     toast(`[${chargeId}] falha ao remover: ${e}`, "error");
   }
-  refresh();
+  // Sem refresh() manual — /api/events remove o card sozinho assim que
+  // o backend tirar o charger do registry.
 }
 
 // Dispara um comando em TODOS os chargers registrados de uma vez
@@ -172,7 +175,8 @@ async function sendBulkCommand(cmd, { args = [], confirmMessage } = {}) {
   } catch (e) {
     toast(`Falha ao enviar comando em massa: ${e}`, "error");
   }
-  refresh();
+  // Sem refresh() manual — /api/events reflete o efeito em todos os
+  // chargers afetados assim que o backend processar cada um.
 }
 
 // ── Construção/atualização de cards (diff, não innerHTML) ───────────
@@ -381,8 +385,42 @@ async function refresh() {
     const chargers = await res.json();
     syncGrid(chargers);
   } catch (e) {
-    // silencioso — próximo ciclo tenta de novo
+    // silencioso — a conexão SSE (connectEventStream) é quem mantém a
+    // tela atualizada de verdade; esta função só serve pra 1ª pintura.
   }
+}
+
+// ── Server-Sent Events (substitui o polling de 1.5s) ────────────────
+// /api/events mantém uma conexão aberta e só empurra um novo snapshot
+// quando algo de fato muda no backend — ver _handle_sse em
+// control_panel.py. EventSource reconecta sozinho (com backoff nativo
+// do próprio browser) se a conexão cair, então não precisa de nenhuma
+// lógica de retry manual aqui.
+let eventSource = null;
+
+function setSseIndicator(connected) {
+  const dot = document.getElementById("sse-dot");
+  if (!dot) return;
+  dot.classList.toggle("connected", connected);
+  dot.title = connected ? "Atualização ao vivo (SSE conectado)" : "Reconectando ao painel...";
+}
+
+function connectEventStream() {
+  eventSource = new EventSource("/api/events");
+  eventSource.onopen = () => setSseIndicator(true);
+  eventSource.onmessage = (event) => {
+    setSseIndicator(true);
+    try {
+      syncGrid(JSON.parse(event.data));
+    } catch (e) {
+      // payload malformado — ignora este evento, o próximo corrige o estado
+    }
+  };
+  eventSource.onerror = () => {
+    // O browser já entra em modo "connecting" e tenta de novo sozinho;
+    // só refletimos isso visualmente enquanto isso não volta.
+    setSseIndicator(false);
+  };
 }
 
 document.getElementById("add-charger-btn").addEventListener("click", addCharger);
@@ -411,5 +449,5 @@ document.querySelector('[data-role="bulk-disconnect"]').addEventListener("click"
     confirmMessage: "Desconectar TODOS os chargers? Cada um reconecta sozinho em seguida, mas as conexões atuais serão encerradas agora.",
   }));
 
-refresh();
-setInterval(refresh, 1500);
+refresh();            // 1ª pintura imediata, antes do stream conectar
+connectEventStream(); // daqui pra frente, toda atualização vem por push

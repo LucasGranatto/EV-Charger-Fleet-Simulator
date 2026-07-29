@@ -92,6 +92,26 @@ button, input, select { font-family: inherit; }
   color: var(--text-dim);
   font-family: var(--font-mono);
   letter-spacing: 0.02em;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Indicador de conexão do stream de eventos (/api/events) — cinza
+   piscando enquanto reconecta (estado inicial ou queda momentânea),
+   verde sólido quando o SSE está de fato entregando atualizações. */
+.sse-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+  flex-shrink: 0;
+  animation: pulse 1.2s ease-in-out infinite;
+}
+.sse-dot.connected {
+  background: var(--green);
+  box-shadow: 0 0 4px var(--green);
+  animation: none;
 }
 
 .stats-strip {
@@ -429,6 +449,6 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .led.charging { animation: none; }
+  .led.charging, .sse-dot { animation: none; }
   .gauge-cell, .card { transition: none; }
 }
