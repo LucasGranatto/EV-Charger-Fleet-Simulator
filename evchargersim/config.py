@@ -22,6 +22,29 @@ FAULT_CODE_MAP = {
     "other_error":            ChargePointErrorCode.other_error,
 }
 
+# Campos de SimConfig que POST /api/chargers pode sobrescrever POR
+# CHARGER individual no modo frota (ex: {"charge_point_id": "CH01",
+# "battery_capacity_wh": 30000}) — whitelist explícita, tanto por
+# segurança (o payload vem de uma requisição HTTP) quanto por sentido:
+# campos como url/control_port/console/fleet_ids não fazem sentido por
+# charger. Ver orchestrator.main().spawn().
+CHARGER_OVERRIDE_FIELDS = frozenset({
+    "connector_id",
+    "meter_values_interval",
+    "heartbeat_interval",
+    "default_offered_amps",
+    "simulation_speed",
+    "battery_capacity_wh",
+    "initial_soc_percent",
+    "nominal_voltage",
+    "call_timeout_seconds",
+    "chaos_disconnect_interval_seconds",
+    "chaos_disconnect_jitter_seconds",
+    "chaos_latency_min_ms",
+    "chaos_latency_max_ms",
+    "chaos_drop_rate",
+})
+
 
 @dataclass
 class SimConfig:
@@ -75,6 +98,23 @@ class SimConfig:
     # charger pré-carregado — chargers são adicionados/removidos dali.
     console: bool = False
 
+    # Arquivo JSON onde a LISTA de charger_id da frota (não o estado de
+    # sessão de cada um — SoC/energia/fila offline continuam efêmeros,
+    # de propósito, ver comentário em orchestrator._save_fleet_state)
+    # é salva a cada spawn/remove e recarregada no próximo boot — sem
+    # isso, reiniciar o processo (deploy, crash, etc.) esquece quais
+    # chargers estavam rodando e você precisa readicionar um por um.
+    # None (padrão) desliga a persistência inteiramente.
+    persist_file: str | None = None
+
+    # Se definido, todo request a /api/* do painel exige esse token —
+    # via header "Authorization: Bearer <token>" (POST/DELETE) ou
+    # querystring "?token=<token>" (GET, inclusive /api/events, que o
+    # EventSource do browser não consegue mandar com header custom).
+    # None (padrão) desliga a autenticação — mesmo comportamento de
+    # antes, pra não quebrar quem já usa isso numa rede confiável.
+    control_token: str | None = None
+
     @classmethod
     def load(cls, argv=None) -> "SimConfig":
         """Monta a config final combinando defaults, --config e flags de CLI."""
@@ -119,6 +159,8 @@ class SimConfig:
             "chaos_latency_max_ms": args.chaos_latency_max,
             "chaos_drop_rate": args.chaos_drop_rate,
             "control_port": args.control_port,
+            "persist_file": args.persist_file,
+            "control_token": args.control_token,
         }
         for key, value in cli_overrides.items():
             if value is not None:
@@ -186,6 +228,15 @@ def _parse_args(argv=None):
                               "pode adicionar chargers pelo próprio painel depois de ligar.")
     parser.add_argument("--control-port", type=int, default=None,
                          help="Porta HTTP do painel de controle web (padrão: 8080).")
+    parser.add_argument("--persist-file", default=None,
+                         help="Arquivo JSON pra lembrar quais chargers da frota estavam rodando "
+                              "entre reinícios do processo (padrão: desabilitado — frota some ao "
+                              "reiniciar). Só a LISTA de IDs é salva, não SoC/energia/fila offline "
+                              "de cada um — cada charger volta com sessão zerada, como um charger "
+                              "de verdade que perdeu energia.")
+    parser.add_argument("--control-token", default=None,
+                         help="Se definido, exige esse token em todo request a /api/* do painel "
+                              "(padrão: desabilitado, sem autenticação).")
     return parser.parse_args(argv)
 
 

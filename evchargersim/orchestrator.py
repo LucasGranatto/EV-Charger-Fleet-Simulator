@@ -4,10 +4,18 @@ charge point (run_charger_lifecycle), os banners impressos ao ligar
 (modo único e modo frota), o loop de chaos de desconexão, e main(): o
 dispatcher que decide entre modo único (um EVChargerSim + console de
 texto) e modo frota (N instâncias em paralelo + painel web de controle).
+
+main() também cuida de: persistência da LISTA de chargers da frota
+entre reinícios (--persist-file — ver _load_fleet_ids/_save_fleet_ids)
+e encerramento gracioso em SIGINT/SIGTERM (ver __main__.py, que cancela
+a task principal; o CancelledError sobe até aqui e o finally de main()
+cancela e espera todos os chargers antes de derrubar o painel web).
 """
 
 import asyncio
+import json
 import logging
+import os
 import random
 import sys
 from dataclasses import replace
@@ -16,7 +24,7 @@ import websockets
 import websockets.exceptions
 
 from .charger import EVChargerSim
-from .config import SimConfig
+from .config import CHARGER_OVERRIDE_FIELDS, SimConfig
 from .control_panel import start_control_server
 from .logging_utils import build_logger
 
@@ -225,6 +233,54 @@ async def run_charger_lifecycle(
 
 
 
+def _load_fleet_ids(path: "str | None", logger: logging.Logger) -> list:
+    """
+    Lê a lista de charge_point_id persistida em --persist-file — só a
+    LISTA em si, nunca estado de sessão (SoC/energia/fila offline
+    continuam efêmeros de propósito: cada charger volta "zerado", como
+    um charger de verdade que perdeu energia — tentar reconstruir
+    transaction_id/fila offline através de um restart completo do
+    processo seria reconstruir estado que só o CSMS deveria arbitrar).
+
+    Arquivo ausente (1ª execução) ou corrompido não é erro fatal — só
+    loga um aviso e segue com frota vazia.
+    """
+    if not path:
+        return []
+    try:
+        with open(path, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        ids = data.get("charger_ids", [])
+        return [cid for cid in ids if isinstance(cid, str) and cid.strip()]
+    except FileNotFoundError:
+        return []
+    except (OSError, json.JSONDecodeError) as exc:
+        logger.warning(
+            f"[PAINEL] não foi possível ler --persist-file '{path}' ({exc!r}) "
+            f"— começando com frota vazia"
+        )
+        return []
+
+
+def _save_fleet_ids(path: "str | None", charger_ids, logger: logging.Logger):
+    """
+    Grava a lista atual de charge_point_id em --persist-file — chamada
+    a cada spawn/remove bem-sucedido (ver spawn()/remove() em main()).
+    Escrita atômica (escreve num arquivo .tmp ao lado e faz os.replace)
+    pra nunca deixar o arquivo pela metade se o processo morrer bem no
+    meio da escrita.
+    """
+    if not path:
+        return
+    try:
+        tmp_path = f"{path}.tmp"
+        with open(tmp_path, "w", encoding="utf-8") as fh:
+            json.dump({"charger_ids": sorted(charger_ids)}, fh, indent=2)
+        os.replace(tmp_path, path)
+    except OSError as exc:
+        logger.warning(f"[PAINEL] não foi possível salvar --persist-file '{path}' ({exc!r})")
+
+
 def _print_dashboard_banner(config: SimConfig, port: int, preloaded_ids: list):
     """Painel de orientação do modo padrão (dashboard), impresso uma vez ao ligar."""
     bar = "═" * 70
@@ -241,6 +297,10 @@ def _print_dashboard_banner(config: SimConfig, port: int, preloaded_ids: list):
         lines.append(f"  Chargers pré-carregados: {', '.join(preloaded_ids)}")
     else:
         lines.append("  Nenhum charger pré-carregado — adicione pelo painel web acima.")
+    if config.persist_file:
+        lines.append(f"  Persistência de frota: {config.persist_file}")
+    if config.control_token:
+        lines.append("  ⚠ Autenticação ativa — /api/* exige --control-token em todo request")
     lines.append(bar)
     lines.append("  Console de texto DESABILITADO neste modo — use o painel web acima")
     lines.append("  pra adicionar/remover chargers e controlar cada um deles.")
@@ -259,7 +319,14 @@ async def main(argv=None):
         # ver --console no help da CLI.
         logger = build_logger(config.charge_point_id, config.verbose)
         _print_console_banner(config)
-        await run_charger_lifecycle(config, logger, registry=None, enable_console=True)
+        try:
+            await run_charger_lifecycle(config, logger, registry=None, enable_console=True)
+        except asyncio.CancelledError:
+            # SIGINT/SIGTERM (ver __main__.py) — run_charger_lifecycle já
+            # cancela seus próprios loops de fundo e fecha a conexão
+            # graciosamente no finally dele antes disso propagar até aqui.
+            logger.info("Encerrando graciosamente...")
+            raise
         return
 
     # Modo padrão: o painel web sobe sempre, mesmo sem nenhum charger
@@ -277,13 +344,31 @@ async def main(argv=None):
     # fazem sentido nele sozinho, cada charger recebe o seu via replace().
     base_config = replace(config, charge_point_id="", fleet_ids=())
 
-    async def spawn(charge_point_id: str) -> str:
+    async def spawn(charge_point_id: str, overrides: dict | None = None) -> str:
         charge_point_id = (charge_point_id or "").strip()
         if not charge_point_id:
             raise ValueError("charge_point_id vazio")
         if charge_point_id in tasks:
             raise ValueError(f"charger '{charge_point_id}' já existe")
+
         charger_config = replace(base_config, charge_point_id=charge_point_id)
+        if overrides:
+            # Whitelist explícita (CHARGER_OVERRIDE_FIELDS) — o payload
+            # vem de uma requisição HTTP (POST /api/chargers), então
+            # nunca confiamos nele o bastante pra fazer replace() com
+            # chaves arbitrárias (poderia incluir "url"/"console"/etc.,
+            # que não fazem sentido por charger individual).
+            unknown = set(overrides) - CHARGER_OVERRIDE_FIELDS
+            if unknown:
+                raise ValueError(
+                    f"campo(s) de override não permitido(s): {', '.join(sorted(unknown))}. "
+                    f"Permitidos: {', '.join(sorted(CHARGER_OVERRIDE_FIELDS))}"
+                )
+            try:
+                charger_config = replace(charger_config, **overrides)
+            except (TypeError, ValueError) as exc:
+                raise ValueError(f"valor de override inválido: {exc}")
+
         charger_logger = build_logger(charge_point_id, config.verbose)
         task = asyncio.create_task(
             run_charger_lifecycle(
@@ -291,6 +376,7 @@ async def main(argv=None):
             )
         )
         tasks[charge_point_id] = task
+        _save_fleet_ids(config.persist_file, tasks.keys(), dash_logger)
         return f"charger '{charge_point_id}' adicionado"
 
     async def remove(charge_point_id: str) -> str:
@@ -305,18 +391,21 @@ async def main(argv=None):
             await task
         except (asyncio.CancelledError, Exception):
             pass
+        _save_fleet_ids(config.persist_file, tasks.keys(), dash_logger)
         return f"charger '{charge_point_id}' removido"
 
-    async def broadcast_command(cmd: str, args: list) -> dict:
+    async def broadcast_command(cmd: str, args: list, ids: "list | None" = None) -> dict:
         """
-        Executa `cmd` em TODOS os chargers atualmente no registry, em
-        paralelo — usado pelas ações "todos" do painel (conectar/
-        desconectar/pausar/retomar todos de uma vez). Uma exceção
-        isolada em um charger vira só uma mensagem de erro na entrada
-        dele do dict de retorno, sem derrubar os demais.
+        Executa `cmd` em paralelo nos chargers do registry — em TODOS,
+        ou só nos listados em `ids` quando fornecido (usado pelo painel
+        pra respeitar o filtro de busca nas ações "todos": ver
+        _handle_command_all em control_panel.py). Uma exceção isolada
+        em um charger vira só uma mensagem de erro na entrada dele do
+        dict de retorno, sem derrubar os demais.
 
         Retorna {charge_point_id: mensagem}. Dict vazio se não há
-        nenhum charger registrado ainda (registry vazio).
+        nenhum charger correspondente (registry vazio, ou `ids` não
+        bate com nenhum charger de fato registrado).
         """
         if not registry:
             return {}
@@ -329,21 +418,70 @@ async def main(argv=None):
 
         # snapshot de .items() — evita RuntimeError se algum charger for
         # removido do registry por outra requisição enquanto isso roda
-        pairs = list(registry.items())
+        if ids is not None:
+            wanted = set(ids)
+            pairs = [(cid, cp) for cid, cp in registry.items() if cid in wanted]
+        else:
+            pairs = list(registry.items())
+        if not pairs:
+            return {}
         results = await asyncio.gather(*(_run_one(cid, cp) for cid, cp in pairs))
         return dict(results)
 
-    start_control_server(
+    control_server = start_control_server(
         registry, config.control_port, loop, dash_logger,
         spawn=spawn, remove=remove, broadcast=broadcast_command,
+        control_token=config.control_token,
     )
 
+    # --fleet (CLI, desta execução) e --persist-file (execuções
+    # anteriores) se somam — dedup preservando --fleet primeiro, já que
+    # é a intenção explícita de AGORA.
     preloaded_ids = list(config.fleet_ids)
-    _print_dashboard_banner(config, config.control_port, preloaded_ids)
-    for charge_point_id in preloaded_ids:
-        await spawn(charge_point_id)
+    persisted_ids = _load_fleet_ids(config.persist_file, dash_logger)
+    restored_ids = [cid for cid in persisted_ids if cid not in preloaded_ids]
+    preloaded_ids.extend(restored_ids)
 
-    # Roda pra sempre — os chargers de fato vêm e vão via spawn()/remove()
-    # disparados pelo painel web, não por um conjunto fixo de tasks
-    # decidido na largada (ao contrário do antigo modo --fleet sozinho).
-    await asyncio.Event().wait()
+    _print_dashboard_banner(config, config.control_port, preloaded_ids)
+    if restored_ids:
+        dash_logger.info(
+            f"[PAINEL] restaurados de --persist-file: {', '.join(restored_ids)}"
+        )
+    for charge_point_id in preloaded_ids:
+        try:
+            await spawn(charge_point_id)
+        except ValueError as exc:
+            dash_logger.warning(f"[PAINEL] não foi possível pré-carregar '{charge_point_id}': {exc}")
+
+    try:
+        # Roda pra sempre — os chargers de fato vêm e vão via
+        # spawn()/remove() disparados pelo painel web, não por um
+        # conjunto fixo de tasks decidido na largada (ao contrário do
+        # antigo modo --fleet sozinho). Só sai daqui por cancelamento
+        # (SIGINT/SIGTERM — ver __main__.py).
+        await asyncio.Event().wait()
+    except asyncio.CancelledError:
+        dash_logger.info(
+            "[PAINEL] encerrando graciosamente — parando painel e todos os chargers..."
+        )
+        raise
+    finally:
+        # Corre em qualquer saída (só existe uma na prática: cancelamento
+        # do SIGINT/SIGTERM) — pra um restart nunca deixar chargers ou o
+        # painel web órfãos rodando contra um event loop que já foi embora.
+        # server.shutdown() é bloqueante (sincrono) por design do
+        # socketserver; roda num executor pra não travar o event loop
+        # principal enquanto isso.
+        await loop.run_in_executor(None, control_server.shutdown)
+        for task in list(tasks.values()):
+            if not task.done():
+                task.cancel()
+        for task in list(tasks.values()):
+            try:
+                await task
+            except (asyncio.CancelledError, Exception):
+                pass
+        dash_logger.info("[PAINEL] painel e todos os chargers encerrados.")
+
+
+

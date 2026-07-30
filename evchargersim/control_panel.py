@@ -22,8 +22,20 @@ existindo (snapshot avulso, sob demanda) pra quem preferir polling
 simples ou não suportar SSE.
 
 /api/command/all executa um comando (disconnect/pause/resume/start/
-stop/etc.) em TODOS os chargers registrados de uma vez — usado pelas
-ações "todos" do painel. Ver broadcast_command() em orchestrator.main().
+stop/fault/clear/etc.) em TODOS os chargers registrados — ou só num
+subconjunto, via "ids" no corpo — de uma vez. Ver broadcast_command()
+em orchestrator.main().
+
+POST /api/chargers aceita overrides de config por charger individual
+(ex: {"charge_point_id": "CH01", "battery_capacity_wh": 30000}) — ver
+CHARGER_OVERRIDE_FIELDS em config.py e spawn() em orchestrator.main().
+
+Se `control_token` for passado pra start_control_server(), todo request
+a /api/* exige esse token — via header "Authorization: Bearer <token>"
+ou querystring "?token=<token>" (necessário pro EventSource do browser
+em GET /api/events, que não manda headers customizados). Arquivos
+estáticos (/, /index.html, /style.css, /app.js) NUNCA exigem token —
+só a API em si; a página em si não expõe nada sensível.
 """
 
 import asyncio
@@ -66,27 +78,56 @@ _SSE_KEEPALIVE_SECONDS = 15
 
 
 def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logger: logging.Logger,
-                           spawn, remove, broadcast):
+                           spawn, remove, broadcast, control_token: "str | None"):
     """
     Fábrica de classe do handler HTTP do painel de controle — precisa ser
     uma fábrica (em vez de uma classe direta) porque BaseHTTPRequestHandler
     não tem como receber argumentos extras no __init__ (o ThreadingHTTPServer
     o instancia sozinho por requisição); fechar `registry`/`loop`/`logger`/
-    `spawn`/`remove`/`broadcast` no escopo aqui é o jeito de fazer todos
-    chegarem até o handler.
+    `spawn`/`remove`/`broadcast`/`control_token` no escopo aqui é o jeito de
+    fazer todos chegarem até o handler.
 
-    `spawn`/`remove` são corotinas `async def (charge_point_id) -> str`
-    (retornam mensagem de resultado, levantam ValueError em erro de uso —
-    ex: ID duplicado ou inexistente) definidas em orchestrator.main() —
-    passadas por aqui em vez de importadas, pra não criar um import
-    circular (orchestrator já importa start_control_server deste módulo).
+    `spawn` é `async def (charge_point_id, overrides=None) -> str` — `overrides`
+    é um dict opcional de campos de SimConfig (whitelist em
+    CHARGER_OVERRIDE_FIELDS) pra esse charger específico, vindo do corpo de
+    POST /api/chargers.
+    `remove` é `async def (charge_point_id) -> str`. Ambos levantam
+    ValueError em erro de uso (ex: ID duplicado ou inexistente) —
+    definidas em orchestrator.main(), passadas por aqui em vez de
+    importadas, pra não criar um import circular (orchestrator já importa
+    start_control_server deste módulo).
 
-    `broadcast` é a corotina `async def (cmd, args) -> dict` (também de
+    `broadcast` é `async def (cmd, args, ids=None) -> dict` (também de
     orchestrator.main()) que executa um comando em todos os chargers do
-    registry de uma vez — usada por POST /api/command/all.
+    registry — ou só nos listados em `ids` — de uma vez, usada por POST
+    /api/command/all.
+
+    `control_token`: se não for None/vazio, todo request a /api/* precisa
+    apresentar esse token (ver _is_authorized) — None desliga a
+    autenticação (comportamento padrão, mesmo de antes).
     """
 
     class ControlPanelHandler(BaseHTTPRequestHandler):
+        def _extract_token(self):
+            # Header primeiro (POST/DELETE, e qualquer chamada via fetch)
+            # — querystring como alternativa, necessária pro EventSource
+            # do browser em GET /api/events, que não consegue mandar
+            # headers customizados numa requisição SSE.
+            auth_header = self.headers.get("Authorization", "")
+            if auth_header.startswith("Bearer "):
+                return auth_header[len("Bearer "):]
+            query = self.path.split("?", 1)[1] if "?" in self.path else ""
+            values = urllib.parse.parse_qs(query).get("token")
+            return values[0] if values else None
+
+        def _is_authorized(self):
+            if not control_token:
+                return True
+            return self._extract_token() == control_token
+
+        def _reject_unauthorized(self):
+            self._send_json({"error": "unauthorized — token ausente ou inválido"}, status=401)
+
         def log_message(self, fmt, *args):
             # BaseHTTPRequestHandler por padrão escreve direto em stderr —
             # sem isso, cada requisição (inclusive o GET /api/events que
@@ -103,8 +144,10 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             self.wfile.write(body)
 
         def do_GET(self):
-            filename = _STATIC_FILES.get(self.path)
+            clean_path = self.path.split("?", 1)[0]
+            filename = _STATIC_FILES.get(clean_path)
             if filename is not None:
+                # Arquivos estáticos nunca exigem token — só a API abaixo.
                 file_path = FRONTEND_DIR / filename
                 try:
                     body = file_path.read_bytes()
@@ -119,7 +162,10 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self.send_header("Content-Length", str(len(body)))
                 self.end_headers()
                 self.wfile.write(body)
-            elif self.path == "/api/state":
+            elif clean_path == "/api/state":
+                if not self._is_authorized():
+                    self._reject_unauthorized()
+                    return
                 # snapshot de todos os chargers já registrados — um
                 # charger que ainda não completou a 1ª conexão (cp ==
                 # None) simplesmente ainda não aparece na lista. Usado
@@ -127,7 +173,10 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 # /api/events (SSE) pra atualização contínua.
                 snapshot = [cp.get_status_dict() for cp in registry.values()]
                 self._send_json(snapshot)
-            elif self.path == "/api/events":
+            elif clean_path == "/api/events":
+                if not self._is_authorized():
+                    self._reject_unauthorized()
+                    return
                 self._handle_sse()
             else:
                 self._send_json({"error": "not found"}, status=404)
@@ -187,6 +236,9 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 logger.debug("[PAINEL] cliente SSE desconectado")
 
         def do_POST(self):
+            if not self._is_authorized():
+                self._reject_unauthorized()
+                return
             if self.path == "/api/command":
                 self._handle_command()
             elif self.path == "/api/command/all":
@@ -197,6 +249,9 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._send_json({"error": "not found"}, status=404)
 
         def do_DELETE(self):
+            if not self._is_authorized():
+                self._reject_unauthorized()
+                return
             prefix = "/api/chargers/"
             if not self.path.startswith(prefix):
                 self._send_json({"error": "not found"}, status=404)
@@ -217,14 +272,22 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             return json.loads(self.rfile.read(length) or b"{}")
 
         def _handle_add_charger(self):
+            """
+            POST /api/chargers — {"charge_point_id": "CH01", ...overrides}.
+            Qualquer chave além de charge_point_id vira um override de
+            SimConfig só pra esse charger (whitelist em
+            CHARGER_OVERRIDE_FIELDS, validada dentro de spawn() —
+            ValueError aqui já chega com uma mensagem pronta pro toast).
+            """
             try:
                 payload = self._read_json_body()
             except (ValueError, json.JSONDecodeError):
                 self._send_json({"ok": False, "message": "corpo inválido"}, status=400)
                 return
             charge_point_id = payload.get("charge_point_id")
+            overrides = {k: v for k, v in payload.items() if k != "charge_point_id"} or None
             try:
-                future = asyncio.run_coroutine_threadsafe(spawn(charge_point_id), loop)
+                future = asyncio.run_coroutine_threadsafe(spawn(charge_point_id, overrides), loop)
                 message = future.result(timeout=15)
                 self._send_json({"ok": True, "message": message})
             except ValueError as exc:
@@ -267,12 +330,13 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
 
         def _handle_command_all(self):
             """
-            POST /api/command/all — {cmd, args} sem charge_point_id:
-            executa o mesmo comando em TODOS os chargers do registry de
-            uma vez (ações "conectar todos"/"desconectar todos"/"pausar
-            todos"/"retomar todos" do painel). Cada charger responde
-            (ou falha) independente dos demais — ver broadcast_command()
-            em orchestrator.main().
+            POST /api/command/all — {cmd, args, ids?}. Sem "ids", executa
+            em TODOS os chargers do registry; com "ids" (lista), só nos
+            listados — usado pelo painel pra respeitar o filtro de busca
+            atual nas ações "todos" (start/stop/pausar/retomar/
+            desconectar/fault/clear). Cada charger responde (ou falha)
+            independente dos demais — ver broadcast_command() em
+            orchestrator.main().
             """
             try:
                 payload = self._read_json_body()
@@ -282,12 +346,16 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
 
             cmd = (payload.get("cmd") or "").lower()
             args = payload.get("args") or []
+            ids = payload.get("ids")
+            if ids is not None and not isinstance(ids, list):
+                self._send_json({"ok": False, "message": "'ids' deve ser uma lista"}, status=400)
+                return
             if not cmd:
                 self._send_json({"ok": False, "message": "cmd vazio"}, status=400)
                 return
 
             try:
-                future = asyncio.run_coroutine_threadsafe(broadcast(cmd, args), loop)
+                future = asyncio.run_coroutine_threadsafe(broadcast(cmd, args, ids), loop)
                 results = future.result(timeout=20)
             except Exception as exc:
                 logger.exception(f"[PAINEL] erro executando comando em massa '{cmd}'")
@@ -295,7 +363,7 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 return
 
             if not results:
-                self._send_json({"ok": True, "message": "nenhum charger conectado ainda", "results": {}})
+                self._send_json({"ok": True, "message": "nenhum charger correspondente encontrado", "results": {}})
                 return
             self._send_json({
                 "ok": True,
@@ -308,7 +376,8 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
 
 
 def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventLoop,
-                          logger: logging.Logger, spawn, remove, broadcast) -> ThreadingHTTPServer:
+                          logger: logging.Logger, spawn, remove, broadcast,
+                          control_token: "str | None" = None) -> ThreadingHTTPServer:
     """
     Sobe o painel web de controle numa ThreadingHTTPServer rodando em
     thread separada — mantém o servidor de controle fora do event loop
@@ -322,14 +391,14 @@ def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventL
     executar a corotina certa no loop principal e esperar o resultado
     de forma síncrona antes de responder ao browser.
 
-    `spawn`/`remove`: corotinas `async def (charge_point_id) -> str`
-    que o painel usa pra adicionar/remover chargers em tempo real (ver
-    orchestrator.main()).
-    `broadcast`: corotina `async def (cmd, args) -> dict` que executa
-    um comando em todos os chargers do registry de uma vez (ações
-    "todos" do painel — ver orchestrator.main()).
+    `spawn`/`remove`: corotinas que o painel usa pra adicionar/remover
+    chargers em tempo real (ver orchestrator.main()).
+    `broadcast`: corotina `async def (cmd, args, ids=None) -> dict` que
+    executa um comando em todos os chargers do registry — ou só num
+    subconjunto — de uma vez (ações "todos" do painel).
+    `control_token`: se definido, toda rota /api/* exige esse token.
     """
-    handler_cls = _make_control_handler(registry, loop, logger, spawn, remove, broadcast)
+    handler_cls = _make_control_handler(registry, loop, logger, spawn, remove, broadcast, control_token)
     server = ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="control-panel")
     thread.start()
