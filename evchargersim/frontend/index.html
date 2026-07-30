@@ -4,40 +4,61 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>EVChargerSim — Painel de Controle</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="style.css">
 </head>
 <body>
   <header class="topbar">
     <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+        <path d="M13 2 L5 18 H13 L11 30 L27 12 H17 L19 2 Z" />
+      </svg>
       <div class="brand-text">
-        <h1>EVChargerSim</h1>
-        <p class="brand-sub">
-          <span class="sse-dot" id="sse-dot" title="Conectando..."></span>
-          Painel de controle · OCPP 1.6J
-          <button id="token-btn" class="icon-btn" type="button" title="Definir token de acesso (--control-token)">🔒</button>
-        </p>
+        <h1>EVChargerSim<span class="brand-version">v3</span></h1>
+        <p class="brand-sub">Painel de controle · OCPP 1.6J</p>
       </div>
     </div>
-    <div class="stats-strip" id="stats-strip"><!-- preenchido por app.js --></div>
+
+    <div class="topbar-right">
+      <div class="stats-strip" id="stats-strip"><!-- preenchido por app.js --></div>
+      <div class="link-status">
+        <span class="sse-dot" id="sse-dot"></span>
+        <span class="link-status-label" id="link-status-label">conectando</span>
+        <button id="token-btn" class="icon-btn" type="button" title="Definir token de acesso (--control-token)">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7V5a4 4 0 1 1 8 0v2h1a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h1Zm2 0h4V5a2 2 0 1 0-4 0v2Z"/></svg>
+        </button>
+      </div>
+    </div>
   </header>
 
   <main>
-    <div class="controls-row">
-      <div class="add-charger-row">
-        <input type="text" id="new-charger-id" placeholder="ID novo, ou lista: CH01, CH02, CH03">
-        <button id="add-charger-btn">+ Adicionar</button>
-        <button id="add-advanced-toggle" class="icon-btn" type="button" title="Opções avançadas por charger">⚙</button>
-      </div>
-      <div class="search-sort-row">
-        <div class="search-row">
-          <span class="search-icon" aria-hidden="true">⌕</span>
-          <input type="text" id="search-input" placeholder="Filtrar por ID">
+    <div class="toolbar">
+      <div class="toolbar-group toolbar-add">
+        <label class="toolbar-label" for="new-charger-id">Adicionar</label>
+        <div class="add-charger-row">
+          <input type="text" id="new-charger-id" placeholder="ID, ou lista: CH01, CH02, CH03">
+          <button id="add-charger-btn" class="btn-primary">Adicionar</button>
+          <button id="add-advanced-toggle" class="icon-btn" type="button" title="Opções avançadas por charger">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.3 1.5c.4 0 .8.3.9.7l.3 1.4c.5.2 1 .4 1.4.7l1.4-.5c.4-.1.8 0 1 .4l.9 1.6c.2.3.1.8-.2 1l-1.1 1c0 .2.1.5.1.7s0 .5-.1.7l1.1 1c.3.2.4.7.2 1l-.9 1.6c-.2.3-.6.5-1 .4l-1.4-.5c-.4.3-.9.5-1.4.7l-.3 1.4c-.1.4-.5.7-.9.7H6.7c-.4 0-.8-.3-.9-.7l-.3-1.4c-.5-.2-1-.4-1.4-.7l-1.4.5c-.4.1-.8 0-1-.4l-.9-1.6c-.2-.3-.1-.8.2-1l1.1-1c0-.2-.1-.5-.1-.7s0-.5.1-.7l-1.1-1c-.3-.2-.4-.7-.2-1l.9-1.6c.2-.3.6-.5 1-.4l1.4.5c.4-.3.9-.5 1.4-.7l.3-1.4c.1-.4.5-.7.9-.7h2.6ZM8 10.5A2.5 2.5 0 1 0 8 5.5a2.5 2.5 0 0 0 0 5Z"/></svg>
+          </button>
         </div>
-        <select id="sort-select" title="Ordenar por">
-          <option value="id">Ordenar: ID</option>
-          <option value="status">Ordenar: Status</option>
-          <option value="soc">Ordenar: SoC</option>
-        </select>
+      </div>
+
+      <div class="toolbar-group toolbar-filter">
+        <label class="toolbar-label" for="search-input">Filtrar</label>
+        <div class="search-sort-row">
+          <div class="search-row">
+            <svg class="search-icon" viewBox="0 0 16 16" aria-hidden="true"><path d="M11.3 9.9a5 5 0 1 0-1.4 1.4l3 3 1.4-1.4-3-3ZM7 10.5A3.5 3.5 0 1 1 7 3.5a3.5 3.5 0 0 1 0 7Z"/></svg>
+            <input type="text" id="search-input" placeholder="Filtrar por ID">
+          </div>
+          <select id="sort-select" title="Ordenar por">
+            <option value="id">ID</option>
+            <option value="status">Status</option>
+            <option value="soc">SoC</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -48,19 +69,24 @@
       <span class="advanced-add-hint">aplica a todo ID adicionado nesta leva</span>
     </div>
 
-    <div class="bulk-actions-row" aria-label="Ações em todos os chargers visíveis">
-      <span class="bulk-actions-label" id="bulk-actions-label">Todos:</span>
-      <input type="text" id="bulk-id-tag" placeholder="id_tag p/ Start" value="LOCAL_TAG">
-      <button data-role="bulk-start">Start</button>
-      <button data-role="bulk-stop">Stop</button>
-      <button data-role="bulk-pause">Pausar</button>
-      <button data-role="bulk-resume">Retomar</button>
-      <button data-role="bulk-disconnect">Desconectar</button>
-      <select id="bulk-fault-select" title="Código de falha p/ Fault">
-      </select>
-      <button data-role="bulk-fault">Fault</button>
-      <button data-role="bulk-clear">Clear</button>
-    </div>
+    <details class="bulk-actions">
+      <summary>
+        <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 4h12M2 8h12M2 12h8"/></svg>
+        <span id="bulk-actions-label">Ações em massa</span>
+        <svg class="chevron" viewBox="0 0 16 16" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
+      </summary>
+      <div class="bulk-actions-row" aria-label="Ações em todos os chargers visíveis">
+        <input type="text" id="bulk-id-tag" placeholder="id_tag p/ Start" value="LOCAL_TAG">
+        <button data-role="bulk-start">Start</button>
+        <button data-role="bulk-stop">Stop</button>
+        <button data-role="bulk-pause">Pausar</button>
+        <button data-role="bulk-resume">Retomar</button>
+        <button data-role="bulk-disconnect">Desconectar</button>
+        <select id="bulk-fault-select" title="Código de falha p/ Fault"></select>
+        <button data-role="bulk-fault">Fault</button>
+        <button data-role="bulk-clear">Clear</button>
+      </div>
+    </details>
 
     <div id="grid"></div>
   </main>

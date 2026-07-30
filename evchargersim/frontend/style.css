@@ -1,38 +1,44 @@
 /* ───────────────────────────────────────────────────────────────
-   Tokens — a paleta e a tipografia imitam o painel físico de um
-   carregador AC de verdade: fundo escuro de quadro elétrico, um
-   único acento âmbar (a cor clássica de LED de "energizado"), e uma
-   fonte monoespaçada só pros números de telemetria (SoC/energia/
-   corrente) — como o display de 7 segmentos de um charger real.
+   Tokens — direção: sala de controle de rede elétrica / prancha de
+   esquema. Fundo grafite-azulado com uma grade de blueprint muito
+   sutil ao fundo; o teal é a cor de "dado vivo" (SSE, foco, ações
+   primárias) e os status seguem convenção real de sinalização
+   elétrica — verde = energizado/normal, âmbar = atenção, vermelho =
+   falha, ardósia = neutro/offline. Tipografia IBM Plex (família
+   desenhada para uso técnico/de engenharia): Sans na interface,
+   Mono com tabular-nums em toda leitura de telemetria.
    ─────────────────────────────────────────────────────────────── */
 :root {
-  --bg: #0a0f1a;
-  --surface: #111a2c;
-  --surface-raised: #16213a;
-  --border: #223252;
-  --border-soft: #1a2740;
+  --bg: #0a0d13;
+  --bg-grid-line: rgba(45, 216, 196, 0.045);
+  --surface: #0f141d;
+  --surface-raised: #151b26;
+  --surface-hover: #1a2230;
+  --border: #212a3a;
+  --border-soft: #191f2c;
 
-  --amber: #f5a623;
-  --amber-dim: #8a6218;
-  --amber-glow: rgba(245, 166, 35, 0.35);
+  --teal: #2dd8c4;
+  --teal-dim: rgba(45, 216, 196, 0.14);
+  --teal-glow: rgba(45, 216, 196, 0.35);
 
-  --text: #e8ecf3;
-  --text-dim: #8fa0bc;
-  --text-faint: #5b6b87;
+  --green: #3ddc84;
+  --green-dim: rgba(61, 220, 132, 0.14);
+  --amber: #f5b942;
+  --amber-dim: rgba(245, 185, 66, 0.14);
+  --red: #ff5c5c;
+  --red-dim: rgba(255, 92, 92, 0.14);
+  --slate: #5b6b84;
+  --slate-dim: rgba(91, 107, 132, 0.14);
 
-  --green: #34c77b;
-  --green-dim: rgba(52, 199, 123, 0.15);
-  --yellow: #f0c239;
-  --yellow-dim: rgba(240, 194, 57, 0.15);
-  --red: #ef5b56;
-  --red-dim: rgba(239, 91, 86, 0.15);
-  --gray-dim: rgba(143, 160, 188, 0.12);
+  --text: #e9eef5;
+  --text-dim: #93a2b8;
+  --text-faint: #55627a;
 
-  --font-ui: -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
-  --font-mono: "SF Mono", "JetBrains Mono", "Cascadia Code", Consolas, Menlo, monospace;
+  --font-ui: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", "SF Mono", Consolas, Menlo, monospace;
 
   --radius: 10px;
-  --radius-sm: 6px;
+  --radius-sm: 7px;
 }
 
 * { box-sizing: border-box; }
@@ -40,179 +46,207 @@
 body {
   margin: 0;
   background:
-    radial-gradient(ellipse 900px 500px at 15% -10%, rgba(245, 166, 35, 0.06), transparent),
+    linear-gradient(var(--bg-grid-line) 1px, transparent 1px) 0 0 / 100% 34px,
+    linear-gradient(90deg, var(--bg-grid-line) 1px, transparent 1px) 0 0 / 34px 100%,
+    radial-gradient(ellipse 1100px 480px at 12% -12%, rgba(45, 216, 196, 0.05), transparent),
     var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
-  padding: 28px 32px 60px;
+  padding: 26px 32px 60px;
   min-height: 100vh;
 }
 
 button, input, select { font-family: inherit; }
 
-::selection { background: var(--amber-glow); }
+::selection { background: var(--teal-glow); color: #04140f; }
 
-/* Foco visível — teclado precisa dar pra navegar tudo isso */
 :focus-visible {
-  outline: 2px solid var(--amber);
+  outline: 2px solid var(--teal);
   outline-offset: 2px;
 }
+
+svg { fill: currentColor; }
 
 /* ── Cabeçalho ─────────────────────────────────────────────────── */
 .topbar {
   display: flex;
   justify-content: space-between;
-  align-items: flex-end;
+  align-items: center;
   flex-wrap: wrap;
-  gap: 20px;
-  margin-bottom: 28px;
-  padding-bottom: 20px;
+  gap: 18px;
+  margin-bottom: 24px;
+  padding-bottom: 18px;
   border-bottom: 1px solid var(--border-soft);
 }
 
 .brand { display: flex; align-items: center; gap: 12px; }
 
 .brand-mark {
-  font-size: 26px;
-  line-height: 1;
-  filter: drop-shadow(0 0 8px var(--amber-glow));
+  width: 26px;
+  height: 26px;
+  color: var(--teal);
+  filter: drop-shadow(0 0 7px var(--teal-glow));
+  flex-shrink: 0;
 }
 
 .brand-text h1 {
   margin: 0;
-  font-size: 19px;
+  font-size: 17px;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: var(--text);
+  display: flex;
+  align-items: baseline;
+  gap: 7px;
+}
+
+.brand-version {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  font-weight: 500;
+  color: var(--teal);
+  background: var(--teal-dim);
+  border-radius: 4px;
+  padding: 1px 5px;
+  letter-spacing: 0.02em;
 }
 
 .brand-sub {
   margin: 2px 0 0;
-  font-size: 12.5px;
-  color: var(--text-dim);
-  font-family: var(--font-mono);
-  letter-spacing: 0.02em;
-  display: flex;
-  align-items: center;
-  gap: 6px;
+  font-size: 12px;
+  color: var(--text-faint);
+  letter-spacing: 0.01em;
 }
 
-/* Indicador de conexão do stream de eventos (/api/events) — cinza
-   piscando enquanto reconecta (estado inicial ou queda momentânea),
-   verde sólido quando o SSE está de fato entregando atualizações. */
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+}
+
+/* Indicador de conexão do stream de eventos (/api/events) */
+.link-status {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  color: var(--text-faint);
+  letter-spacing: 0.02em;
+}
+
 .sse-dot {
-  width: 6px;
-  height: 6px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
-  background: var(--text-faint);
+  background: var(--slate);
   flex-shrink: 0;
   animation: pulse 1.2s ease-in-out infinite;
 }
 .sse-dot.connected {
   background: var(--green);
-  box-shadow: 0 0 4px var(--green);
+  box-shadow: 0 0 5px var(--green);
   animation: none;
 }
+.link-status-label { text-transform: uppercase; }
 
-/* Botões pequenos "de ícone" — token (🔒) e opções avançadas (⚙) */
 .icon-btn {
-  padding: 2px 6px;
-  font-size: 12px;
-  line-height: 1;
-  border-radius: 4px;
-  border-color: var(--border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  padding: 0;
+  border-radius: var(--radius-sm);
+  border: 1px solid var(--border);
   color: var(--text-faint);
   background: transparent;
 }
-.icon-btn:hover:not(:disabled) { color: var(--amber); background: rgba(245, 166, 35, 0.1); }
+.icon-btn svg { width: 14px; height: 14px; }
+.icon-btn:hover:not(:disabled) { color: var(--teal); border-color: var(--teal-dim); background: var(--teal-dim); }
 
 .stats-strip {
   display: flex;
-  gap: 2px;
-  background: var(--surface);
+  gap: 1px;
+  background: var(--border-soft);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
   overflow: hidden;
 }
 
 .stat {
-  padding: 8px 16px;
+  padding: 7px 14px;
   text-align: center;
-  min-width: 74px;
-  border-right: 1px solid var(--border-soft);
+  min-width: 66px;
+  background: var(--surface);
 }
-.stat:last-child { border-right: none; }
 
 .stat-value {
   display: block;
   font-family: var(--font-mono);
-  font-size: 18px;
+  font-size: 17px;
   font-weight: 600;
   line-height: 1.1;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
 }
 
 .stat-label {
   display: block;
-  font-size: 10px;
+  font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.07em;
   color: var(--text-faint);
   margin-top: 3px;
 }
 
-.stat.stat-online .stat-value { color: var(--green); }
-.stat.stat-charging .stat-value { color: var(--amber); }
+.stat.stat-online .stat-value { color: var(--teal); }
+.stat.stat-charging .stat-value { color: var(--green); }
 .stat.stat-faulted .stat-value { color: var(--red); }
 
-/* ── Controles ─────────────────────────────────────────────────── */
-.controls-row {
+/* ── Toolbar ───────────────────────────────────────────────────── */
+.toolbar {
   display: flex;
   justify-content: space-between;
   flex-wrap: wrap;
-  gap: 12px;
-  margin-bottom: 20px;
+  gap: 20px;
+  margin-bottom: 14px;
 }
 
-.add-charger-row, .search-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
+.toolbar-group { display: flex; flex-direction: column; gap: 6px; }
+
+.toolbar-label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+  padding-left: 1px;
 }
 
-.search-sort-row {
-  display: flex;
-  gap: 8px;
-  align-items: center;
-}
-
-.search-row {
-  position: relative;
-}
+.add-charger-row, .search-row { display: flex; gap: 8px; align-items: center; }
+.search-sort-row { display: flex; gap: 8px; align-items: center; }
+.search-row { position: relative; }
 
 .search-icon {
   position: absolute;
-  left: 11px;
+  left: 10px;
+  width: 13px;
+  height: 13px;
   color: var(--text-faint);
-  font-size: 14px;
   pointer-events: none;
 }
 
-#search-input { padding-left: 28px; width: 200px; }
-#new-charger-id { width: 240px; }
-#sort-select { width: 150px; }
+#search-input { padding-left: 30px; width: 200px; }
+#new-charger-id { width: 250px; }
+#sort-select { width: 130px; }
 
-.add-charger-row button {
-  font-weight: 600;
-  white-space: nowrap;
-}
-
-/* ── Opções avançadas de "+ Adicionar" (overrides por charger) ──── */
+/* ── Opções avançadas de "+ Adicionar" ────────────────────────────── */
 .advanced-add-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin: -8px 0 18px;
+  margin: -2px 0 16px;
   padding: 10px 14px;
   background: var(--surface);
   border: 1px dashed var(--border);
@@ -225,25 +259,47 @@ button, input, select { font-family: inherit; }
   font-style: italic;
 }
 
-/* ── Faixa de ações em massa (conectar/desconectar/pausar/retomar todos) ── */
+/* ── Ações em massa (disclosure nativo) ───────────────────────────── */
+.bulk-actions {
+  margin-bottom: 16px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  overflow: hidden;
+}
+
+.bulk-actions summary {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 14px;
+  cursor: pointer;
+  list-style: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-dim);
+  user-select: none;
+}
+.bulk-actions summary::-webkit-details-marker { display: none; }
+.bulk-actions summary svg:first-child { width: 13px; height: 13px; color: var(--text-faint); }
+.bulk-actions summary .chevron {
+  width: 12px; height: 12px;
+  margin-left: auto;
+  color: var(--text-faint);
+  transition: transform 0.15s;
+}
+.bulk-actions[open] summary .chevron { transform: rotate(180deg); }
+.bulk-actions summary:hover { color: var(--teal); }
+
 .bulk-actions-row {
   display: flex;
   align-items: center;
   gap: 8px;
   flex-wrap: wrap;
-  margin-bottom: 18px;
-  padding: 10px 14px;
-  background: var(--surface);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
-}
-
-.bulk-actions-label {
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  color: var(--text-faint);
-  margin-right: 2px;
+  padding: 4px 14px 14px;
+  border-top: 1px solid var(--border-soft);
 }
 
 #bulk-id-tag { width: 150px; }
@@ -252,7 +308,7 @@ button, input, select { font-family: inherit; }
 /* ── Grade de cards ────────────────────────────────────────────── */
 #grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
   gap: 14px;
 }
 
@@ -261,44 +317,45 @@ button, input, select { font-family: inherit; }
   border: 1px solid var(--border);
   border-radius: var(--radius);
   padding: 16px 18px;
-  transition: border-color 0.2s;
+  transition: border-color 0.2s, box-shadow 0.2s;
 }
-
-.card[data-status="faulted"] { border-color: rgba(239, 91, 86, 0.4); }
+.card:hover { border-color: #2a3548; }
+.card[data-status="faulted"] { border-color: rgba(255, 92, 86, 0.35); }
+.card[data-status="charging"] { border-color: rgba(61, 220, 132, 0.28); }
 
 .card-top {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 14px;
+  margin-bottom: 13px;
 }
 
 .id-block { display: flex; align-items: center; gap: 9px; min-width: 0; }
 
 .cp-id {
+  font-family: var(--font-mono);
   font-weight: 600;
-  font-size: 14.5px;
+  font-size: 13.5px;
+  letter-spacing: 0.01em;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-/* LED de status — como a luzinha do conector de um charger físico.
-   Pulsa suavemente só quando carregando (o único movimento ambiente
-   da página; respeita prefers-reduced-motion mais abaixo). */
+/* Pino de conector — hexágono em vez do LED redondo genérico,
+   remete ao pino de um conector Type 2. Pulsa só carregando. */
 .led {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+  width: 11px;
+  height: 11px;
   flex-shrink: 0;
-  background: var(--text-faint);
-  box-shadow: 0 0 0 rgba(0,0,0,0);
+  background: var(--slate);
+  clip-path: polygon(50% 0%, 100% 25%, 100% 75%, 50% 100%, 0% 75%, 0% 25%);
 }
-.led.available { background: var(--text-dim); }
-.led.charging { background: var(--green); box-shadow: 0 0 6px var(--green); animation: pulse 1.8s ease-in-out infinite; }
-.led.suspended { background: var(--yellow); box-shadow: 0 0 6px var(--yellow); }
+.led.available { background: var(--text-faint); }
+.led.charging { background: var(--green); box-shadow: 0 0 7px var(--green); animation: pulse 1.8s ease-in-out infinite; }
+.led.suspended { background: var(--amber); box-shadow: 0 0 6px var(--amber); }
 .led.faulted { background: var(--red); box-shadow: 0 0 6px var(--red); }
-.led.offline { background: var(--text-faint); }
+.led.offline { background: var(--slate); }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -306,53 +363,97 @@ button, input, select { font-family: inherit; }
 }
 
 .pill {
-  font-size: 10.5px;
-  padding: 3px 9px;
-  border-radius: 999px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  padding: 3px 8px;
+  border-radius: 4px;
   text-transform: uppercase;
   letter-spacing: 0.04em;
-  font-weight: 700;
+  font-weight: 600;
   white-space: nowrap;
 }
 .pill.charging { background: var(--green-dim); color: var(--green); }
-.pill.suspended { background: var(--yellow-dim); color: var(--yellow); }
-.pill.available { background: var(--gray-dim); color: var(--text-dim); }
+.pill.suspended { background: var(--amber-dim); color: var(--amber); }
+.pill.available { background: var(--slate-dim); color: var(--text-dim); }
 .pill.faulted { background: var(--red-dim); color: var(--red); }
-.pill.inoperative { background: var(--gray-dim); color: var(--text-faint); }
-.pill.offline { background: var(--red-dim); color: var(--red); opacity: 0.7; }
+.pill.inoperative { background: var(--slate-dim); color: var(--text-faint); }
+.pill.offline { background: var(--red-dim); color: var(--red); opacity: 0.65; }
 
-/* Gauge de SoC — 10 células segmentadas, como o ícone de bateria de
-   um display de charger real, em vez de uma barra de progresso lisa. */
+/* Gauge de SoC — células segmentadas */
 .gauge-row {
   display: flex;
   align-items: center;
   gap: 10px;
-  margin-bottom: 12px;
+  margin-bottom: 10px;
 }
 
-.gauge {
-  display: flex;
-  gap: 2px;
-  flex: 1;
-}
+.gauge { display: flex; gap: 2px; flex: 1; }
 
 .gauge-cell {
-  height: 12px;
+  height: 11px;
   flex: 1;
   border-radius: 2px;
-  background: var(--gray-dim);
+  background: var(--slate-dim);
   transition: background-color 0.3s;
 }
-.gauge-cell.filled { background: var(--amber); }
+.gauge-cell.filled { background: var(--teal); }
 .gauge-cell.filled.charging { background: var(--green); }
 
 .gauge-value {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
-  min-width: 38px;
+  min-width: 36px;
   text-align: right;
+}
+
+/* Forma de onda CA — elemento-assinatura: senoide contínua quando
+   carregando (amplitude reflete a corrente real puxada), linha
+   plana em repouso/suspenso, trêmula em vermelho quando faulted.
+   Cada card tem sua própria trilha (2 cópias do mesmo path lado a
+   lado, deslocadas em loop) — ver createCard()/updateCard() em
+   app.js, que só troca classe/amplitude, nunca recria o SVG. */
+.wave {
+  height: 26px;
+  margin-bottom: 12px;
+  overflow: hidden;
+  border-radius: 4px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-soft);
+}
+
+.wave-track {
+  display: flex;
+  width: 200%;
+  height: 100%;
+  animation: wave-scroll 2.4s linear infinite;
+  animation-play-state: paused;
+}
+.wave[data-status="charging"] .wave-track { animation-play-state: running; }
+.wave[data-status="faulted"] .wave-track { animation-duration: 0.35s; animation-timing-function: steps(6); }
+
+.wave-track svg { width: 50%; height: 100%; flex-shrink: 0; overflow: visible; }
+
+.wave-path {
+  fill: none;
+  stroke: var(--slate);
+  stroke-width: 1.6;
+  vector-effect: non-scaling-stroke;
+  transform-origin: center;
+  transform: scaleY(var(--wave-amp, 0.08));
+  transition: transform 0.4s ease, stroke 0.3s ease;
+}
+.wave[data-status="charging"] .wave-path { stroke: var(--green); }
+.wave[data-status="suspended"] .wave-path { stroke: var(--amber); transform: scaleY(0.12); }
+.wave[data-status="faulted"] .wave-path { stroke: var(--red); transform: scaleY(0.5); }
+.wave[data-status="available"] .wave-path,
+.wave[data-status="offline"] .wave-path { stroke: var(--border); transform: scaleY(0.04); }
+
+@keyframes wave-scroll {
+  from { transform: translateX(0); }
+  to { transform: translateX(-50%); }
 }
 
 .telemetry {
@@ -368,28 +469,29 @@ button, input, select { font-family: inherit; }
 .telemetry-item { display: flex; flex-direction: column; gap: 2px; }
 
 .telemetry-label {
-  font-size: 10px;
+  font-size: 9.5px;
   text-transform: uppercase;
-  letter-spacing: 0.05em;
+  letter-spacing: 0.06em;
   color: var(--text-faint);
 }
 
 .telemetry-value {
   font-family: var(--font-mono);
-  font-size: 13px;
+  font-size: 12.5px;
   font-weight: 600;
+  font-variant-numeric: tabular-nums;
   color: var(--text);
 }
 
-/* ── Faixa de controle (linguagem de "teclado de charger") ───────── */
-.control-strip { display: flex; flex-direction: column; gap: 8px; }
+/* ── Faixa de controle ─────────────────────────────────────────── */
+.control-strip { display: flex; flex-direction: column; gap: 7px; }
 
 .btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
 
 .start-row { display: flex; gap: 6px; }
 .start-row input[type=text] { flex: 1; min-width: 0; }
 
-button, select, input[type=text] {
+button, select, input[type=text], input[type=number] {
   font-size: 12px;
   border-radius: var(--radius-sm);
   border: 1px solid var(--border);
@@ -398,24 +500,35 @@ button, select, input[type=text] {
   padding: 6px 10px;
 }
 
+input[type=text]:focus, input[type=number]:focus, select:focus { border-color: var(--teal-dim); }
+
 button {
   cursor: pointer;
-  border-color: var(--amber-dim);
-  color: var(--amber);
-  transition: background 0.12s, opacity 0.12s;
+  border-color: var(--border);
+  color: var(--text-dim);
+  font-weight: 500;
+  transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-button:hover:not(:disabled) { background: rgba(245, 166, 35, 0.12); }
-button:disabled { opacity: 0.3; cursor: not-allowed; }
+button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: #2a3548; }
+button:disabled { opacity: 0.32; cursor: not-allowed; }
 
-button.danger { border-color: var(--red); color: var(--red); }
+button.btn-primary {
+  background: var(--teal-dim);
+  border-color: rgba(45, 216, 196, 0.4);
+  color: var(--teal);
+  font-weight: 600;
+}
+button.btn-primary:hover:not(:disabled) { background: rgba(45, 216, 196, 0.22); }
+
+button.danger { border-color: rgba(255, 92, 92, 0.4); color: var(--red); }
 button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 /* ── Empty state ───────────────────────────────────────────────── */
 .empty {
   grid-column: 1 / -1;
   text-align: center;
-  padding: 64px 24px;
+  padding: 70px 24px;
   color: var(--text-dim);
   border: 1px dashed var(--border);
   border-radius: var(--radius);
@@ -423,11 +536,11 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 .empty strong { color: var(--text); display: block; margin-bottom: 6px; font-size: 15px; }
 .empty span { font-size: 13px; }
 
-/* ── Modal de confirmação (substitui o confirm() nativo) ──────────── */
+/* ── Modal de confirmação ──────────────────────────────────────── */
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(6, 9, 16, 0.7);
+  background: rgba(4, 6, 10, 0.72);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -463,7 +576,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 .toast {
   background: var(--surface-raised);
   border: 1px solid var(--border);
-  border-left: 3px solid var(--amber);
+  border-left: 3px solid var(--teal);
   color: var(--text);
   padding: 10px 16px;
   border-radius: var(--radius-sm);
@@ -472,10 +585,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.2s, transform 0.2s;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.35);
-  /* .toast-stack é pointer-events:none (não bloqueia clique na página
-     por baixo) — cada toast individual precisa reverter isso, senão o
-     toggle "ver detalhes" abaixo fica inclicável. */
+  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
   pointer-events: auto;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -495,7 +605,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   text-decoration: underline;
   text-underline-offset: 2px;
 }
-.toast-toggle:hover { color: var(--amber); background: none; }
+.toast-toggle:hover { color: var(--teal); background: none; }
 
 .toast-details {
   margin-top: 6px;
@@ -513,9 +623,10 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 /* ── Responsivo ────────────────────────────────────────────────── */
 @media (max-width: 640px) {
-  body { padding: 20px 16px 48px; }
+  body { padding: 20px 16px 48px; background-size: 100% 24px, 24px 100%, auto, auto; }
   .topbar { flex-direction: column; align-items: flex-start; }
-  .controls-row { flex-direction: column; align-items: stretch; }
+  .topbar-right { width: 100%; justify-content: space-between; }
+  .toolbar { flex-direction: column; align-items: stretch; }
   .search-sort-row { flex-direction: column; align-items: stretch; }
   #new-charger-id, #search-input, #bulk-id-tag, #sort-select,
   #bulk-fault-select, .advanced-add-row input[type=number] { width: 100%; }
@@ -523,6 +634,6 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .led.charging, .sse-dot { animation: none; }
-  .gauge-cell, .card { transition: none; }
+  .led.charging, .sse-dot, .wave-track { animation: none; }
+  .gauge-cell, .card, .wave-path { transition: none; }
 }

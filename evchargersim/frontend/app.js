@@ -363,6 +363,16 @@ function createCard(c) {
       </div>
       <span class="pill" data-role="pill"></span>
     </div>
+    <div class="wave" data-role="wave">
+      <div class="wave-track">
+        <svg viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
+          <path class="wave-path" d="M0,20 Q15,0 30,20 T60,20 T90,20 T120,20 T150,20 T180,20 T210,20 T240,20" />
+        </svg>
+        <svg viewBox="0 0 240 40" preserveAspectRatio="none" aria-hidden="true">
+          <path class="wave-path" d="M0,20 Q15,0 30,20 T60,20 T90,20 T120,20 T150,20 T180,20 T210,20 T240,20" />
+        </svg>
+      </div>
+    </div>
     <div class="gauge-row">
       <div class="gauge" data-role="gauge">
         ${Array.from({ length: 10 }, () => '<div class="gauge-cell"></div>').join("")}
@@ -443,6 +453,17 @@ function updateCard(el, c) {
   const pill = el.querySelector('[data-role="pill"]');
   pill.className = `pill ${status}`;
   pill.textContent = c.online ? (STATUS_LABEL[c.status] || c.status) : "Offline";
+
+  // Amplitude reflete a corrente real puxada (c.actual_amps) contra um
+  // teto de referência de 32A (AC monofásico/trifásico comum) — só
+  // usado quando "charging" (as outras classes de status fixam sua
+  // própria amplitude em CSS, ver .wave[data-status=...] .wave-path).
+  const wave = el.querySelector('[data-role="wave"]');
+  wave.dataset.status = status;
+  const ampRatio = Math.min(1, (c.actual_amps || 0) / 32);
+  wave.querySelectorAll(".wave-path").forEach((p) => {
+    p.style.setProperty("--wave-amp", (0.15 + ampRatio * 0.7).toFixed(2));
+  });
 
   const gauge = el.querySelector('[data-role="gauge"]');
   const cells = gauge.children;
@@ -577,9 +598,11 @@ let eventSource = null;
 
 function setSseIndicator(connected) {
   const dot = document.getElementById("sse-dot");
+  const label = document.getElementById("link-status-label");
   if (!dot) return;
   dot.classList.toggle("connected", connected);
   dot.title = connected ? "Atualização ao vivo (SSE conectado)" : "Reconectando ao painel...";
+  if (label) label.textContent = connected ? "ao vivo" : "reconectando";
 }
 
 function connectEventStream() {
