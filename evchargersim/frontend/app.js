@@ -235,15 +235,16 @@ async function addOneCharger(chargeId, overrides) {
   return res.json();
 }
 
-// Aceita tanto um ID único quanto uma lista separada por vírgula
-// ("CH01, CH02, CH03") — dispara um POST por ID e resume o resultado
-// num único toast, em vez de exigir que o usuário adicione um de cada vez.
-async function addCharger() {
-  const input = document.getElementById("new-charger-id");
-  const ids = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+// Núcleo compartilhado por addCharger() (IDs digitados) e
+// importChargersFromFile() (IDs de um .txt) — dispara um POST por ID
+// (overrides de "opções avançadas" aplicados a TODOS da leva, como já
+// acontecia antes) e resume o resultado num único toast expansível,
+// em vez de um toast por ID (importante sobretudo pro caso de arquivo,
+// que pode trazer dezenas de IDs de uma vez).
+async function addManyChargers(ids, { sourceLabel = null } = {}) {
   if (ids.length === 0) {
-    toast("Digite ao menos um ID antes de adicionar.", "error");
-    return;
+    toast("Nenhum ID válido encontrado.", "error");
+    return { okCount: 0, failed: [] };
   }
 
   const overrides = collectAddOverrides();
@@ -252,17 +253,69 @@ async function addCharger() {
   ));
   const okCount = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok).map((r) => r.message);
+  const prefix = sourceLabel ? `[${sourceLabel}] ` : "";
 
   if (ids.length === 1) {
-    toast(results[0].message, results[0].ok ? "success" : "error");
+    toast(prefix + results[0].message, results[0].ok ? "success" : "error");
   } else if (failed.length === 0) {
-    toast(`${okCount} chargers adicionados.`, "success");
+    toast(`${prefix}${okCount} chargers adicionados.`, "success");
   } else {
-    toast(`${okCount} adicionado(s), ${failed.length} falharam: ${failed.join(" · ")}`, "error");
+    toast(`${prefix}${okCount} adicionado(s), ${failed.length} falharam.`, failed.length === okCount ? "error" : "success", failed);
   }
+  return { okCount, failed };
+}
+
+// Aceita tanto um ID único quanto uma lista separada por vírgula
+// ("CH01, CH02, CH03") digitada no campo — ver addManyChargers() para
+// o que de fato dispara as requisições.
+async function addCharger() {
+  const input = document.getElementById("new-charger-id");
+  const ids = input.value.split(",").map((s) => s.trim()).filter(Boolean);
+  if (ids.length === 0) {
+    toast("Digite ao menos um ID antes de adicionar.", "error");
+    return;
+  }
+  const { okCount } = await addManyChargers(ids);
   if (okCount > 0) input.value = "";
   // Sem refresh() manual — /api/events mostra o(s) novo(s) charger(s)
   // assim que ele(s) conectar(em) de verdade.
+}
+
+// Extrai IDs de um .txt: um por linha e/ou separados por vírgula
+// (os dois formatos ao mesmo tempo são tolerados), linhas em branco e
+// espaços em volta descartados, duplicatas removidas preservando a
+// 1ª ocorrência — arquivo exportado de qualquer planilha/lista simples
+// já funciona sem exigir um formato exato.
+function parseChargerIdsFromText(text) {
+  const seen = new Set();
+  const ids = [];
+  for (const raw of text.split(/[\n,]+/)) {
+    const id = raw.trim();
+    if (id && !seen.has(id)) {
+      seen.add(id);
+      ids.push(id);
+    }
+  }
+  return ids;
+}
+
+// Lê o .txt escolhido no <input type="file"> inteiramente no browser
+// (FileReader) — nenhuma rota nova no backend: cada ID vira o mesmo
+// POST /api/chargers que "+ Adicionar" já dispara, um por um.
+async function importChargersFromFile(file) {
+  let text;
+  try {
+    text = await file.text();
+  } catch (e) {
+    toast(`Não foi possível ler o arquivo: ${e}`, "error");
+    return;
+  }
+  const ids = parseChargerIdsFromText(text);
+  if (ids.length === 0) {
+    toast(`Nenhum ID encontrado em "${file.name}".`, "error");
+    return;
+  }
+  await addManyChargers(ids, { sourceLabel: file.name });
 }
 
 async function removeCharger(chargeId) {
@@ -629,6 +682,18 @@ function connectEventStream() {
 document.getElementById("add-charger-btn").addEventListener("click", addCharger);
 document.getElementById("new-charger-id").addEventListener("keydown", (e) => {
   if (e.key === "Enter") addCharger();
+});
+document.getElementById("import-file-btn").addEventListener("click", () => {
+  document.getElementById("import-file-input").click();
+});
+document.getElementById("import-file-input").addEventListener("change", async (e) => {
+  const file = e.target.files[0];
+  if (file) await importChargersFromFile(file);
+  // Zera o input — sem isso, escolher o MESMO arquivo de novo em
+  // seguida não dispara "change" (o browser considera que o valor não
+  // mudou), então uma 2ª tentativa de importar o mesmo .txt ficaria
+  // silenciosamente sem efeito.
+  e.target.value = "";
 });
 document.getElementById("add-advanced-toggle").addEventListener("click", () => {
   const row = document.getElementById("advanced-add-row");

@@ -223,6 +223,13 @@ svg { fill: currentColor; }
   padding-left: 1px;
 }
 
+.toolbar-hint {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-style: italic;
+  padding-left: 1px;
+}
+
 .add-charger-row, .search-row { display: flex; gap: 8px; align-items: center; }
 .search-sort-row { display: flex; gap: 8px; align-items: center; }
 .search-row { position: relative; }

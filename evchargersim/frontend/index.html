@@ -40,10 +40,15 @@
         <div class="add-charger-row">
           <input type="text" id="new-charger-id" placeholder="ID, ou lista: CH01, CH02, CH03">
           <button id="add-charger-btn" class="btn-primary">Adicionar</button>
+          <button id="import-file-btn" class="icon-btn" type="button" title="Importar lista de IDs de um arquivo .txt">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1.5a1 1 0 0 1 1 1v6.6l2-2a1 1 0 1 1 1.4 1.4l-3.7 3.7a1 1 0 0 1-1.4 0L3.6 8.5A1 1 0 1 1 5 7.1l2 2V2.5a1 1 0 0 1 1-1ZM2.5 12.5a1 1 0 0 1 1-1h9a1 1 0 1 1 0 2h-9a1 1 0 0 1-1-1Z"/></svg>
+          </button>
+          <input type="file" id="import-file-input" accept=".txt,text/plain" hidden>
           <button id="add-advanced-toggle" class="icon-btn" type="button" title="Opções avançadas por charger">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M9.3 1.5c.4 0 .8.3.9.7l.3 1.4c.5.2 1 .4 1.4.7l1.4-.5c.4-.1.8 0 1 .4l.9 1.6c.2.3.1.8-.2 1l-1.1 1c0 .2.1.5.1.7s0 .5-.1.7l1.1 1c.3.2.4.7.2 1l-.9 1.6c-.2.3-.6.5-1 .4l-1.4-.5c-.4.3-.9.5-1.4.7l-.3 1.4c-.1.4-.5.7-.9.7H6.7c-.4 0-.8-.3-.9-.7l-.3-1.4c-.5-.2-1-.4-1.4-.7l-1.4.5c-.4.1-.8 0-1-.4l-.9-1.6c-.2-.3-.1-.8.2-1l1.1-1c0-.2-.1-.5-.1-.7s0-.5.1-.7l-1.1-1c-.3-.2-.4-.7-.2-1l.9-1.6c.2-.3.6-.5 1-.4l1.4.5c.4-.3.9-.5 1.4-.7l.3-1.4c.1-.4.5-.7.9-.7h2.6ZM8 10.5A2.5 2.5 0 1 0 8 5.5a2.5 2.5 0 0 0 0 5Z"/></svg>
           </button>
         </div>
+        <span class="toolbar-hint">ou importe um .txt (1 ID por linha, ou separados por vírgula)</span>
       </div>
 
       <div class="toolbar-group toolbar-filter">
