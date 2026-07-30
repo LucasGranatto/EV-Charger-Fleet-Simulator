@@ -14,6 +14,7 @@
         <p class="brand-sub">
           <span class="sse-dot" id="sse-dot" title="Conectando..."></span>
           Painel de controle · OCPP 1.6J
+          <button id="token-btn" class="icon-btn" type="button" title="Definir token de acesso (--control-token)">🔒</button>
         </p>
       </div>
     </div>
@@ -25,21 +26,40 @@
       <div class="add-charger-row">
         <input type="text" id="new-charger-id" placeholder="ID novo, ou lista: CH01, CH02, CH03">
         <button id="add-charger-btn">+ Adicionar</button>
+        <button id="add-advanced-toggle" class="icon-btn" type="button" title="Opções avançadas por charger">⚙</button>
       </div>
-      <div class="search-row">
-        <span class="search-icon" aria-hidden="true">⌕</span>
-        <input type="text" id="search-input" placeholder="Filtrar por ID">
+      <div class="search-sort-row">
+        <div class="search-row">
+          <span class="search-icon" aria-hidden="true">⌕</span>
+          <input type="text" id="search-input" placeholder="Filtrar por ID">
+        </div>
+        <select id="sort-select" title="Ordenar por">
+          <option value="id">Ordenar: ID</option>
+          <option value="status">Ordenar: Status</option>
+          <option value="soc">Ordenar: SoC</option>
+        </select>
       </div>
     </div>
 
-    <div class="bulk-actions-row" aria-label="Ações em todos os chargers">
-      <span class="bulk-actions-label">Todos:</span>
+    <div class="advanced-add-row" id="advanced-add-row" hidden>
+      <input type="number" id="adv-battery-kwh" placeholder="Bateria (kWh)" min="1" step="0.5">
+      <input type="number" id="adv-initial-soc" placeholder="SoC inicial (%)" min="0" max="100" step="1">
+      <input type="number" id="adv-default-amps" placeholder="Corrente padrão (A)" min="0" step="1">
+      <span class="advanced-add-hint">aplica a todo ID adicionado nesta leva</span>
+    </div>
+
+    <div class="bulk-actions-row" aria-label="Ações em todos os chargers visíveis">
+      <span class="bulk-actions-label" id="bulk-actions-label">Todos:</span>
       <input type="text" id="bulk-id-tag" placeholder="id_tag p/ Start" value="LOCAL_TAG">
       <button data-role="bulk-start">Start</button>
       <button data-role="bulk-stop">Stop</button>
       <button data-role="bulk-pause">Pausar</button>
       <button data-role="bulk-resume">Retomar</button>
       <button data-role="bulk-disconnect">Desconectar</button>
+      <select id="bulk-fault-select" title="Código de falha p/ Fault">
+      </select>
+      <button data-role="bulk-fault">Fault</button>
+      <button data-role="bulk-clear">Clear</button>
     </div>
 
     <div id="grid"></div>
@@ -55,7 +75,7 @@
     </div>
   </div>
 
-  <div class="toast-stack" id="toast-stack"></div>
+  <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
   <script src="app.js"></script>
 </body>

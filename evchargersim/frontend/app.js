@@ -6,6 +6,10 @@ const STATUS_LABEL = {
   faulted: "Falha", inoperative: "Inoperativo",
 };
 
+// Ordem de prioridade quando currentSort === "status" — falha primeiro
+// (o que mais precisa de atenção), offline por último.
+const STATUS_SORT_RANK = { faulted: 0, charging: 1, suspended: 2, available: 3, inoperative: 4 };
+
 // Elementos de card já criados, por charge_point_id — o coração da
 // renderização por diff. Uma vez que o card de um charger existe, ele
 // NUNCA é destruído/recriado enquanto esse charger continuar na lista;
@@ -23,6 +27,11 @@ const idTagInputs = {};
 const faultSelections = {};
 
 let currentFilter = "";
+let currentSort = "id";
+// Último snapshot recebido (via SSE ou refresh()) — guardado pra poder
+// reordenar (mudar currentSort) instantaneamente, sem esperar o
+// próximo evento do stream.
+let lastChargers = [];
 
 function escapeHtml(value) {
   return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
@@ -32,20 +41,125 @@ function escapeAttr(value) {
   return escapeHtml(value).replace(/"/g, "&quot;");
 }
 
-// ── Toasts empilháveis ──────────────────────────────────────────────
+// ── Autenticação (--control-token, opcional) ────────────────────────
+// Token guardado em localStorage — este é um app real de verdade
+// rodando no navegador do usuário (não um Artifact do Claude), então
+// persistir entre reloads é o comportamento certo aqui. Vazio = painel
+// sem autenticação (comportamento padrão, --control-token não usado).
+const TOKEN_STORAGE_KEY = "evchargersim_control_token";
 
-function toast(message, kind = "info") {
+function getControlToken() {
+  return localStorage.getItem(TOKEN_STORAGE_KEY) || "";
+}
+
+function setControlToken(value) {
+  if (value) localStorage.setItem(TOKEN_STORAGE_KEY, value);
+  else localStorage.removeItem(TOKEN_STORAGE_KEY);
+}
+
+// Anexa "?token=" numa URL — só necessário pro EventSource (GET
+// /api/events), que não consegue mandar um header Authorization
+// customizado. Chamadas via fetch() usam o header normalmente (ver
+// apiFetch), que é a forma preferida.
+function withTokenParam(url) {
+  const token = getControlToken();
+  if (!token) return url;
+  const sep = url.includes("?") ? "&" : "?";
+  return `${url}${sep}token=${encodeURIComponent(token)}`;
+}
+
+// Wrapper único de fetch() pra toda chamada à API do painel — injeta o
+// token (se configurado) e centraliza o aviso de "acesso negado" num
+// único lugar, em vez de repetir a checagem de status 401 em cada
+// função que fala com o backend.
+async function apiFetch(url, options = {}) {
+  const token = getControlToken();
+  const headers = { ...(options.headers || {}) };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401) {
+    toast("Acesso negado — defina o token do painel (🔒 no topo) e tente de novo.", "error");
+  }
+  return res;
+}
+
+function promptForToken() {
+  const current = getControlToken();
+  const value = window.prompt(
+    "Token do painel (--control-token do servidor) — deixe vazio se o painel não exige token:",
+    current
+  );
+  if (value === null) return; // cancelado, nada muda
+  setControlToken(value.trim());
+  toast(value.trim() ? "Token salvo." : "Token removido.", "success");
+  // Reabre o stream de eventos já com o token atualizado.
+  if (eventSource) eventSource.close();
+  connectEventStream();
+  refresh();
+}
+
+// ── Toasts empilháveis (com detalhe opcional expansível) ────────────
+
+function toast(message, kind = "info", details = null) {
   const stack = document.getElementById("toast-stack");
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
-  el.textContent = message;
+
+  const msgEl = document.createElement("div");
+  msgEl.className = "toast-message";
+  msgEl.textContent = message;
+  el.appendChild(msgEl);
+
+  // Detalhe por charger (ex: resultado de uma ação em massa) — só
+  // aparece quando faz sentido, escondido atrás de um toggle pra não
+  // inflar o toast de ações simples de 1 charger só.
+  if (details && details.length > 0) {
+    const toggle = document.createElement("button");
+    toggle.type = "button";
+    toggle.className = "toast-toggle";
+    toggle.textContent = `ver detalhes (${details.length}) ▸`;
+
+    const list = document.createElement("div");
+    list.className = "toast-details";
+    list.hidden = true;
+    list.innerHTML = details.map((d) => `<div>${escapeHtml(d)}</div>`).join("");
+
+    toggle.addEventListener("click", () => {
+      list.hidden = !list.hidden;
+      toggle.textContent = list.hidden ? `ver detalhes (${details.length}) ▸` : "ocultar detalhes ▾";
+    });
+
+    el.appendChild(toggle);
+    el.appendChild(list);
+  }
+
   stack.appendChild(el);
   const raf = window.requestAnimationFrame || ((cb) => setTimeout(cb, 0));
   raf(() => el.classList.add("show"));
+  // Toasts com detalhes ficam mais tempo na tela — o usuário pode
+  // querer abrir a lista antes que suma sozinho.
+  const lifetime = details && details.length > 0 ? 6000 : 3200;
   setTimeout(() => {
     el.classList.remove("show");
     setTimeout(() => el.remove(), 250);
-  }, 3200);
+  }, lifetime);
+}
+
+// Monta o toast de resultado de uma ação em massa (/api/command/all) —
+// mensagens de exceção isolada (prefixo "erro:", ver broadcast_command
+// em orchestrator.py) contam como falha pra decidir a cor do toast;
+// qualquer outra resposta (mesmo "já em sessão" etc.) é só informativa.
+function showBulkResultToast(data) {
+  if (!data.ok) {
+    toast(data.message || "erro", "error");
+    return;
+  }
+  const results = data.results || {};
+  const entries = Object.entries(results);
+  const failed = entries.filter(([, msg]) => /^erro:/i.test(msg));
+  const kind = entries.length === 0 ? "error" : (failed.length > 0 ? "error" : "success");
+  const details = entries.map(([id, msg]) => `${id}: ${msg}`);
+  toast(data.message, kind, details);
 }
 
 // ── Modal de confirmação (substitui confirm() nativo) ───────────────
@@ -83,7 +197,7 @@ function confirmDialog(message) {
 
 async function sendCommand(chargeId, cmd, args) {
   try {
-    const res = await fetch("/api/command", {
+    const res = await apiFetch("/api/command", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ charge_point_id: chargeId, cmd, args: args || [] }),
@@ -97,11 +211,26 @@ async function sendCommand(chargeId, cmd, args) {
   // stream de /api/events assim que o backend processar o comando.
 }
 
-async function addOneCharger(chargeId) {
-  const res = await fetch("/api/chargers", {
+// Lê os campos de "opções avançadas" do formulário de adicionar
+// charger — só entram no payload os campos de fato preenchidos, cada
+// um virando um override de SimConfig só pro(s) charger(s) desta leva
+// (ver CHARGER_OVERRIDE_FIELDS em config.py).
+function collectAddOverrides() {
+  const overrides = {};
+  const batteryKwh = parseFloat(document.getElementById("adv-battery-kwh").value);
+  const initialSoc = parseFloat(document.getElementById("adv-initial-soc").value);
+  const defaultAmps = parseFloat(document.getElementById("adv-default-amps").value);
+  if (!Number.isNaN(batteryKwh) && batteryKwh > 0) overrides.battery_capacity_wh = batteryKwh * 1000;
+  if (!Number.isNaN(initialSoc)) overrides.initial_soc_percent = initialSoc;
+  if (!Number.isNaN(defaultAmps) && defaultAmps >= 0) overrides.default_offered_amps = defaultAmps;
+  return overrides;
+}
+
+async function addOneCharger(chargeId, overrides) {
+  const res = await apiFetch("/api/chargers", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ charge_point_id: chargeId }),
+    body: JSON.stringify({ charge_point_id: chargeId, ...overrides }),
   });
   return res.json();
 }
@@ -117,8 +246,9 @@ async function addCharger() {
     return;
   }
 
+  const overrides = collectAddOverrides();
   const results = await Promise.all(ids.map((id) =>
-    addOneCharger(id).catch((e) => ({ ok: false, message: `${id}: ${e}` }))
+    addOneCharger(id, overrides).catch((e) => ({ ok: false, message: `${id}: ${e}` }))
   ));
   const okCount = results.filter((r) => r.ok).length;
   const failed = results.filter((r) => !r.ok).map((r) => r.message);
@@ -141,7 +271,7 @@ async function removeCharger(chargeId) {
   );
   if (!confirmed) return;
   try {
-    const res = await fetch(`/api/chargers/${encodeURIComponent(chargeId)}`, { method: "DELETE" });
+    const res = await apiFetch(`/api/chargers/${encodeURIComponent(chargeId)}`, { method: "DELETE" });
     const data = await res.json();
     toast(data.message || (data.ok ? "ok" : "erro"), data.ok ? "success" : "error");
     delete idTagInputs[chargeId];
@@ -153,27 +283,53 @@ async function removeCharger(chargeId) {
   // o backend tirar o charger do registry.
 }
 
-// Dispara um comando em TODOS os chargers registrados de uma vez
-// (botões "Start"/"Stop"/"Pausar"/"Retomar"/"Desconectar" da
-// bulk-actions-row). O backend (/api/command/all) já isola falha de um
-// charger sem derrubar os demais — aqui só resume o resultado num
-// único toast em vez de um por charger, pra não inundar a tela com N
-// toasts de uma vez.
-async function sendBulkCommand(cmd, { args = [], confirmMessage } = {}) {
+// IDs dos chargers atualmente visíveis na grade (respeitando o filtro
+// de busca) — é isso, e não "todos os chargers do registry", que as
+// ações da bulk-actions-row devem afetar. Card escondido (display:none,
+// ver updateCard) não entra.
+function visibleChargerIds() {
+  const ids = [];
+  for (const [id, el] of cardElements) {
+    if (el.style.display !== "none") ids.push(id);
+  }
+  return ids;
+}
+
+function updateBulkCountLabel() {
+  const label = document.getElementById("bulk-actions-label");
+  if (!label) return;
+  const n = visibleChargerIds().length;
+  label.textContent = currentFilter ? `Visíveis (${n}):` : `Todos (${n}):`;
+}
+
+// Dispara um comando nos chargers VISÍVEIS no momento (respeita o
+// filtro de busca — ver visibleChargerIds) de uma vez. O backend
+// (/api/command/all) já isola falha de um charger sem derrubar os
+// demais — aqui só resume o resultado num único toast expansível em
+// vez de um por charger, pra não inundar a tela com N toasts de uma vez.
+async function sendBulkCommand(cmd, { args = [], confirmMessage, button } = {}) {
+  const ids = visibleChargerIds();
+  if (ids.length === 0) {
+    toast("Nenhum charger visível pra aplicar essa ação (confira o filtro de busca).", "error");
+    return;
+  }
   if (confirmMessage) {
     const confirmed = await confirmDialog(confirmMessage);
     if (!confirmed) return;
   }
+  if (button) button.disabled = true;
   try {
-    const res = await fetch("/api/command/all", {
+    const res = await apiFetch("/api/command/all", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ cmd, args }),
+      body: JSON.stringify({ cmd, args, ids }),
     });
     const data = await res.json();
-    toast(data.message || (data.ok ? "ok" : "erro"), data.ok ? "success" : "error");
+    showBulkResultToast(data);
   } catch (e) {
     toast(`Falha ao enviar comando em massa: ${e}`, "error");
+  } finally {
+    if (button) button.disabled = false;
   }
   // Sem refresh() manual — /api/events reflete o efeito em todos os
   // chargers afetados assim que o backend processar cada um.
@@ -334,19 +490,39 @@ function updateStatsStrip(chargers) {
     <div class="stat stat-faulted"><span class="stat-value">${faulted}</span><span class="stat-label">Falha</span></div>`;
 }
 
+// Ordena conforme currentSort ("id" | "status" | "soc") — ID é sempre
+// o desempate, pra ordem estável entre re-renderizações.
+function sortChargers(chargers) {
+  const arr = [...chargers];
+  if (currentSort === "status") {
+    arr.sort((a, b) => {
+      const ra = a.online ? (STATUS_SORT_RANK[a.status] ?? 5) : 6;
+      const rb = b.online ? (STATUS_SORT_RANK[b.status] ?? 5) : 6;
+      return ra !== rb ? ra - rb : a.charge_point_id.localeCompare(b.charge_point_id);
+    });
+  } else if (currentSort === "soc") {
+    arr.sort((a, b) => b.soc_percent - a.soc_percent || a.charge_point_id.localeCompare(b.charge_point_id));
+  } else {
+    arr.sort((a, b) => a.charge_point_id.localeCompare(b.charge_point_id));
+  }
+  return arr;
+}
+
 function syncGrid(chargers) {
+  lastChargers = chargers;
   updateStatsStrip(chargers);
 
   const grid = document.getElementById("grid");
   if (chargers.length === 0) {
     renderEmptyState(false);
+    updateBulkCountLabel();
     return;
   }
   if (grid.querySelector(".empty")) {
     grid.innerHTML = "";
   }
 
-  const sorted = [...chargers].sort((a, b) => a.charge_point_id.localeCompare(b.charge_point_id));
+  const sorted = sortChargers(chargers);
   const seen = new Set();
   let anyVisible = false;
 
@@ -377,11 +553,12 @@ function syncGrid(chargers) {
   if (!anyVisible && currentFilter) {
     renderEmptyState(true);
   }
+  updateBulkCountLabel();
 }
 
 async function refresh() {
   try {
-    const res = await fetch("/api/state");
+    const res = await apiFetch("/api/state");
     const chargers = await res.json();
     syncGrid(chargers);
   } catch (e) {
@@ -406,7 +583,7 @@ function setSseIndicator(connected) {
 }
 
 function connectEventStream() {
-  eventSource = new EventSource("/api/events");
+  eventSource = new EventSource(withTokenParam("/api/events"));
   eventSource.onopen = () => setSseIndicator(true);
   eventSource.onmessage = (event) => {
     setSseIndicator(true);
@@ -418,7 +595,10 @@ function connectEventStream() {
   };
   eventSource.onerror = () => {
     // O browser já entra em modo "connecting" e tenta de novo sozinho;
-    // só refletimos isso visualmente enquanto isso não volta.
+    // só refletimos isso visualmente enquanto isso não volta. Um 401
+    // (token errado/ausente) também cai aqui — o EventSource não expõe
+    // o status code, então o toast de auth só aparece via apiFetch()
+    // nas outras chamadas; aqui só o indicador fica vermelho mesmo.
     setSseIndicator(false);
   };
 }
@@ -427,27 +607,60 @@ document.getElementById("add-charger-btn").addEventListener("click", addCharger)
 document.getElementById("new-charger-id").addEventListener("keydown", (e) => {
   if (e.key === "Enter") addCharger();
 });
+document.getElementById("add-advanced-toggle").addEventListener("click", () => {
+  const row = document.getElementById("advanced-add-row");
+  row.hidden = !row.hidden;
+});
 document.getElementById("search-input").addEventListener("input", (e) => {
   currentFilter = e.target.value.trim().toLowerCase();
   for (const [id, el] of cardElements) {
     el.style.display = (!currentFilter || id.toLowerCase().includes(currentFilter)) ? "" : "none";
   }
+  updateBulkCountLabel();
 });
+document.getElementById("sort-select").addEventListener("change", (e) => {
+  currentSort = e.target.value;
+  syncGrid(lastChargers); // reordena na hora, sem esperar o próximo evento do SSE
+});
+document.getElementById("token-btn").addEventListener("click", promptForToken);
+document.getElementById("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
 
-document.querySelector('[data-role="bulk-start"]').addEventListener("click", () => {
+const bulkStartBtn = document.querySelector('[data-role="bulk-start"]');
+const bulkStopBtn = document.querySelector('[data-role="bulk-stop"]');
+const bulkPauseBtn = document.querySelector('[data-role="bulk-pause"]');
+const bulkResumeBtn = document.querySelector('[data-role="bulk-resume"]');
+const bulkDisconnectBtn = document.querySelector('[data-role="bulk-disconnect"]');
+const bulkFaultBtn = document.querySelector('[data-role="bulk-fault"]');
+const bulkClearBtn = document.querySelector('[data-role="bulk-clear"]');
+
+bulkStartBtn.addEventListener("click", () => {
   const idTag = document.getElementById("bulk-id-tag").value.trim() || "LOCAL_TAG";
-  sendBulkCommand("start", { args: [idTag] });
+  sendBulkCommand("start", { args: [idTag], button: bulkStartBtn });
 });
-document.querySelector('[data-role="bulk-stop"]').addEventListener("click", () =>
-  sendBulkCommand("stop"));
-document.querySelector('[data-role="bulk-pause"]').addEventListener("click", () =>
-  sendBulkCommand("pause"));
-document.querySelector('[data-role="bulk-resume"]').addEventListener("click", () =>
-  sendBulkCommand("resume"));
-document.querySelector('[data-role="bulk-disconnect"]').addEventListener("click", () =>
-  sendBulkCommand("disconnect", {
-    confirmMessage: "Desconectar TODOS os chargers? Cada um reconecta sozinho em seguida, mas as conexões atuais serão encerradas agora.",
+bulkStopBtn.addEventListener("click", () =>
+  sendBulkCommand("stop", {
+    button: bulkStopBtn,
+    confirmMessage: "Parar a sessão de TODOS os chargers visíveis? Isso encerra a transação (StopTransaction) de cada um agora.",
   }));
+bulkPauseBtn.addEventListener("click", () =>
+  sendBulkCommand("pause", { button: bulkPauseBtn }));
+bulkResumeBtn.addEventListener("click", () =>
+  sendBulkCommand("resume", { button: bulkResumeBtn }));
+bulkDisconnectBtn.addEventListener("click", () =>
+  sendBulkCommand("disconnect", {
+    button: bulkDisconnectBtn,
+    confirmMessage: "Desconectar TODOS os chargers visíveis? Cada um reconecta sozinho em seguida, mas as conexões atuais serão encerradas agora.",
+  }));
+bulkFaultBtn.addEventListener("click", () => {
+  const code = document.getElementById("bulk-fault-select").value;
+  sendBulkCommand("fault", {
+    args: [code],
+    button: bulkFaultBtn,
+    confirmMessage: `Colocar TODOS os chargers visíveis em Faulted (${code})? Use "Clear" depois pra voltar ao normal.`,
+  });
+});
+bulkClearBtn.addEventListener("click", () =>
+  sendBulkCommand("clear", { button: bulkClearBtn }));
 
 refresh();            // 1ª pintura imediata, antes do stream conectar
 connectEventStream(); // daqui pra frente, toda atualização vem por push

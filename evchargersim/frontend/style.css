@@ -114,6 +114,18 @@ button, input, select { font-family: inherit; }
   animation: none;
 }
 
+/* Botões pequenos "de ícone" — token (🔒) e opções avançadas (⚙) */
+.icon-btn {
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1;
+  border-radius: 4px;
+  border-color: var(--border);
+  color: var(--text-faint);
+  background: transparent;
+}
+.icon-btn:hover:not(:disabled) { color: var(--amber); background: rgba(245, 166, 35, 0.1); }
+
 .stats-strip {
   display: flex;
   gap: 2px;
@@ -167,6 +179,12 @@ button, input, select { font-family: inherit; }
   align-items: center;
 }
 
+.search-sort-row {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
 .search-row {
   position: relative;
 }
@@ -181,10 +199,30 @@ button, input, select { font-family: inherit; }
 
 #search-input { padding-left: 28px; width: 200px; }
 #new-charger-id { width: 240px; }
+#sort-select { width: 150px; }
 
 .add-charger-row button {
   font-weight: 600;
   white-space: nowrap;
+}
+
+/* ── Opções avançadas de "+ Adicionar" (overrides por charger) ──── */
+.advanced-add-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: -8px 0 18px;
+  padding: 10px 14px;
+  background: var(--surface);
+  border: 1px dashed var(--border);
+  border-radius: var(--radius-sm);
+}
+.advanced-add-row input[type=number] { width: 150px; }
+.advanced-add-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* ── Faixa de ações em massa (conectar/desconectar/pausar/retomar todos) ── */
@@ -209,6 +247,7 @@ button, input, select { font-family: inherit; }
 }
 
 #bulk-id-tag { width: 150px; }
+#bulk-fault-select { width: 170px; }
 
 /* ── Grade de cards ────────────────────────────────────────────── */
 #grid {
@@ -434,17 +473,52 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   transform: translateY(8px);
   transition: opacity 0.2s, transform 0.2s;
   box-shadow: 0 8px 24px rgba(0,0,0,0.35);
+  /* .toast-stack é pointer-events:none (não bloqueia clique na página
+     por baixo) — cada toast individual precisa reverter isso, senão o
+     toggle "ver detalhes" abaixo fica inclicável. */
+  pointer-events: auto;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
 .toast.error { border-left-color: var(--red); }
 .toast.success { border-left-color: var(--green); }
+
+.toast-message { line-height: 1.4; }
+
+.toast-toggle {
+  display: block;
+  margin-top: 6px;
+  padding: 2px 0;
+  font-size: 11px;
+  border: none;
+  background: none;
+  color: var(--text-dim);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+.toast-toggle:hover { color: var(--amber); background: none; }
+
+.toast-details {
+  margin-top: 6px;
+  padding-top: 6px;
+  border-top: 1px solid var(--border-soft);
+  max-height: 160px;
+  overflow-y: auto;
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-dim);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 
 /* ── Responsivo ────────────────────────────────────────────────── */
 @media (max-width: 640px) {
   body { padding: 20px 16px 48px; }
   .topbar { flex-direction: column; align-items: flex-start; }
   .controls-row { flex-direction: column; align-items: stretch; }
-  #new-charger-id, #search-input, #bulk-id-tag { width: 100%; }
+  .search-sort-row { flex-direction: column; align-items: stretch; }
+  #new-charger-id, #search-input, #bulk-id-tag, #sort-select,
+  #bulk-fault-select, .advanced-add-row input[type=number] { width: 100%; }
   #grid { grid-template-columns: 1fr; }
 }
 
