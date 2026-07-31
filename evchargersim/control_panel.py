@@ -77,6 +77,19 @@ _SSE_POLL_SECONDS = 0.5
 _SSE_KEEPALIVE_SECONDS = 15
 
 
+# Teto de sanidade para o corpo de POST/PUT (/api/chargers, /api/command,
+# /api/command/all) — sem isso, _read_json_body() confiava cegamente no
+# Content-Length declarado pelo cliente e tentava ler (alocar) esse
+# tanto de bytes de uma vez, mesmo que fosse um valor absurdo. Nenhum
+# payload legítimo deste painel chega perto de 1 MB (o maior é a lista
+# de overrides de POST /api/chargers, algumas dezenas de bytes).
+_MAX_BODY_BYTES = 1_000_000
+
+
+class _PayloadTooLarge(ValueError):
+    """Content-Length declarado excede _MAX_BODY_BYTES — ver _read_json_body."""
+
+
 def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logger: logging.Logger,
                            spawn, remove, broadcast, control_token: "str | None"):
     """
@@ -269,6 +282,16 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
 
         def _read_json_body(self):
             length = int(self.headers.get("Content-Length", 0))
+            if length > _MAX_BODY_BYTES:
+                # Rejeita ANTES de chamar rfile.read(length) — é
+                # justamente essa chamada, com um `length` não
+                # verificado vindo direto do header, que arriscava
+                # alocar memória proporcional a qualquer valor que o
+                # cliente decidisse declarar.
+                raise _PayloadTooLarge(
+                    f"corpo da requisição ({length} bytes) excede o limite de "
+                    f"{_MAX_BODY_BYTES} bytes"
+                )
             return json.loads(self.rfile.read(length) or b"{}")
 
         def _handle_add_charger(self):
@@ -281,8 +304,11 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             """
             try:
                 payload = self._read_json_body()
-            except (ValueError, json.JSONDecodeError):
-                self._send_json({"ok": False, "message": "corpo inválido"}, status=400)
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+                return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
                 return
             charge_point_id = payload.get("charge_point_id")
             overrides = {k: v for k, v in payload.items() if k != "charge_point_id"} or None
@@ -299,8 +325,11 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
         def _handle_command(self):
             try:
                 payload = self._read_json_body()
-            except (ValueError, json.JSONDecodeError):
-                self._send_json({"ok": False, "message": "corpo inválido"}, status=400)
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+                return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
                 return
 
             charge_point_id = payload.get("charge_point_id")
@@ -340,8 +369,11 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             """
             try:
                 payload = self._read_json_body()
-            except (ValueError, json.JSONDecodeError):
-                self._send_json({"ok": False, "message": "corpo inválido"}, status=400)
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+                return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
                 return
 
             cmd = (payload.get("cmd") or "").lower()
