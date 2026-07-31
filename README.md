@@ -54,7 +54,9 @@ A faixa "Todos" no topo do painel dispara start/stop/pause/resume/
 disconnect/fault/clear em todos os chargers **visíveis no momento**
 (respeita o filtro de busca — filtre por prefixo e a ação em massa afeta
 só aqueles). "+ Adicionar" tem um botão de opções avançadas (⚙) pra
-definir bateria/SoC inicial/corrente padrão só pros IDs daquela leva.
+definir bateria/SoC inicial/corrente padrão só pros IDs daquela leva, e
+um botão de import (⇪) pra carregar uma lista de IDs de um arquivo
+`.txt` de uma vez — ver [Importar chargers de um arquivo](#importar-chargers-de-um-arquivo) abaixo.
 
 Se quiser já subir com alguns pré-carregados (opcional, você pode
 adicionar/remover mais depois de qualquer forma):
@@ -62,6 +64,35 @@ adicionar/remover mais depois de qualquer forma):
 ```bash
 python -m evchargersim --fleet CH01,CH02,CH03 --url ws://seu-csms:9001 --control-port 8080
 ```
+
+## Importar chargers de um arquivo
+
+Pra adicionar muitos chargers de uma vez sem digitar ID por ID, clique
+no botão de import (⇪) ao lado de "+ Adicionar" e escolha um `.txt`.
+Formato aceito:
+
+```
+CH01
+CH02
+CH03
+```
+
+ou tudo numa linha separado por vírgula (`CH01, CH02, CH03`) — os dois
+formatos podem ser misturados no mesmo arquivo. Linhas em branco são
+ignoradas e IDs duplicados no arquivo são descartados automaticamente
+(mantendo a 1ª ocorrência).
+
+O arquivo é lido inteiramente no navegador — nenhum upload ao servidor,
+nenhuma rota nova: cada ID vira exatamente o mesmo `POST /api/chargers`
+que "+ Adicionar" já dispara, um por um. Por isso, se o botão de opções
+avançadas (⚙) estiver aberto com bateria/SoC inicial/corrente padrão
+definidos, esses overrides valem pra toda a leva importada também. Ao
+final, um toast resume quantos entraram e — se algum falhar (ex: ID já
+existente no registry) — lista o detalhe de cada um.
+
+Essa importação só existe no painel web, por enquanto; não há
+equivalente em `--fleet`/CLI (que continua aceitando só uma lista
+direto na linha de comando).
 
 ## Uso — modo legado (1 charger, console de texto, sem painel)
 
@@ -213,3 +244,19 @@ Dois bugs reais foram encontrados e corrigidos nesse processo:
   reordenando na hora a partir do último snapshot conhecido.
 - Indicador de conexão do SSE (bolinha ao lado do subtítulo) e botão
   🔒 pra configurar o token de acesso, salvo em `localStorage`.
+
+## Notas da revisão de import de frota via arquivo
+
+- **Botão de import (⇪) no painel web** — lê um `.txt` inteiro no
+  browser (`file.text()`, sem upload ao servidor) e adiciona cada ID
+  encontrado como um charger novo. Aceita um ID por linha e/ou
+  separados por vírgula, ignora linhas em branco e remove duplicatas.
+  Nenhuma rota nova: cada ID vira o mesmo `POST /api/chargers` que
+  "+ Adicionar" já disparava.
+- A lógica de "adicionar vários IDs" (antes só dentro do handler do
+  campo de texto) foi extraída pra uma função compartilhada, usada
+  tanto pelo campo digitado quanto pelo import de arquivo — overrides
+  de "opções avançadas" (bateria/SoC/corrente) continuam se aplicando
+  à leva inteira nos dois casos.
+- Só existe no painel web por enquanto — sem equivalente em `--fleet`/
+  CLI. Ver [Importar chargers de um arquivo](#importar-chargers-de-um-arquivo).
