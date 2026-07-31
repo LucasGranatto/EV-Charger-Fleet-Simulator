@@ -367,7 +367,14 @@ class EVChargerSim(BaseChargePoint):
                         f"{len(queue) - i} mensagem(ns) voltam para a fila."
                     )
                     self.is_online = False
-                    state.offline_queue = queue[i:]  # este item + os que nem tentamos
+                    # Soma (não sobrescreve): entre o início deste flush
+                    # (que já tinha zerado state.offline_queue, linha
+                    # acima) e agora, outra coroutine concorrente pode ter
+                    # enfileirado algo nesse meio-tempo (ex: um fault ou
+                    # StatusNotification que também perdeu conexão nessa
+                    # janela) — um `=` simples aqui descartaria essas
+                    # mensagens silenciosamente em vez de preservá-las.
+                    state.offline_queue = queue[i:] + state.offline_queue
                     return
 
                 self.log.info(f"[FILA OFFLINE] '{kind}' entregue com sucesso.")
@@ -661,6 +668,31 @@ class EVChargerSim(BaseChargePoint):
         await self.send_status_notification(ChargePointStatus.available)
         self.log.info("[RESET] concluído — carregador disponível novamente")
 
+    def _current_ocpp_status(self) -> ChargePointStatus:
+        """
+        Deriva o ChargePointStatus real a partir do estado atual —
+        usado por on_trigger_message (StatusNotification) pra reportar
+        o status de verdade, em vez de só carregando/disponível.
+        Prioridade: Faulted > sessão ativa (Charging/SuspendedEV/
+        SuspendedEVSE) > Inoperative > Reserved > Available — mesma
+        ordem usada em get_status_dict() (pro dashboard) e em
+        run_reconnect_sequence().
+        """
+        state = self.state
+        if state.is_faulted:
+            return ChargePointStatus.faulted
+        if state.active_transaction_id is not None:
+            if state.session_suspended:
+                return ChargePointStatus.suspended_ev
+            if state.evse_suspended_by_profile:
+                return ChargePointStatus.suspended_evse
+            return ChargePointStatus.charging
+        if state.availability_status == "Inoperative":
+            return ChargePointStatus.unavailable
+        if state.reservation_id is not None:
+            return ChargePointStatus.reserved
+        return ChargePointStatus.available
+
     @on(Action.trigger_message)
     async def on_trigger_message(self, requested_message, connector_id=None, **kwargs):
         """
@@ -670,11 +702,12 @@ class EVChargerSim(BaseChargePoint):
         """
         self.log.info(f"[TRIGGER MESSAGE] requested={requested_message} connector={connector_id}")
         if requested_message == "StatusNotification":
-            current_status = (
-                ChargePointStatus.charging if self.state.active_transaction_id is not None
-                else ChargePointStatus.available
-            )
-            asyncio.create_task(self.send_status_notification(current_status))
+            # Antes só verificava "tem sessão ativa?" e reportava
+            # Charging/Available — um TriggerMessage pedido com o
+            # charger em Faulted/Inoperative/Reserved/Suspended
+            # reportava o status errado, exatamente no handler cujo
+            # propósito é ressincronizar o CSMS com o estado real.
+            asyncio.create_task(self.send_status_notification(self._current_ocpp_status()))
         elif requested_message == "Heartbeat":
             # Via _call_or_queue, não self.call direto — offline, isso
             # levantaria ConnectionClosed numa task sem ninguém aguardando.
