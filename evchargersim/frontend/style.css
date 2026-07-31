@@ -339,6 +339,8 @@ svg { fill: currentColor; }
 
 .id-block { display: flex; align-items: center; gap: 9px; min-width: 0; }
 
+.card-top-right { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
 .cp-id {
   font-family: var(--font-mono);
   font-weight: 600;
@@ -488,6 +490,76 @@ svg { fill: currentColor; }
   font-weight: 600;
   font-variant-numeric: tabular-nums;
   color: var(--text);
+}
+
+/* ── Painel expansível de histórico (SoC/corrente ao longo do tempo) ── */
+.history-panel {
+  margin: -4px 0 14px;
+  padding: 10px 10px 8px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.history-chart-wrap {
+  position: relative;
+  height: 92px;
+}
+
+.history-chart { width: 100%; height: 100%; overflow: visible; }
+
+.history-axis { stroke: var(--border); stroke-width: 1; }
+
+.history-line {
+  fill: none;
+  stroke-width: 1.75;
+  vector-effect: non-scaling-stroke;
+}
+.history-line-soc { stroke: var(--teal); }
+.history-line-amps { stroke: var(--green); opacity: 0.85; }
+
+.history-empty {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 0 12px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.history-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  margin-top: 6px;
+  font-size: 11px;
+  color: var(--text-dim);
+}
+
+.legend-item { display: flex; align-items: center; gap: 5px; }
+.legend-item i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.legend-soc i { background: var(--teal); }
+.legend-amps i { background: var(--green); }
+.legend-item b {
+  font-family: var(--font-mono);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.history-window {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--text-faint);
+  font-style: italic;
 }
 
 /* ── Faixa de controle ─────────────────────────────────────────── */

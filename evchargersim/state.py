@@ -58,6 +58,13 @@ class ChargerState:
     # (resposta "Scheduled") até a sessão terminar — ver spec OCPP.
     pending_availability_change: str | None = None
 
+    # ── Histórico de amostras (SoC/corrente/potência), usado pelo
+    # gráfico expansível de cada card no painel web (GET /api/history/
+    # <id>) — ver EVChargerSim._record_history_sample(). Janela
+    # deslizante de tamanho fixo (não todo o histórico da execução);
+    # não persistido entre reinícios, como o resto deste estado.
+    history: list = field(default_factory=list)
+
     # ── Fila de mensagens não entregues (offline ou chaos), reenviadas
     # em ordem na reconexão — ver _call_or_queue / _flush_offline_queue.
     # Item: {"kind": str, "request": call.X, "local_tx_id": int|None}.

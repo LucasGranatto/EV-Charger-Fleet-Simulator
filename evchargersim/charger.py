@@ -47,6 +47,14 @@ from .config import FAULT_CODE_MAP, SimConfig
 from .physics import compute_actual_current, read_grid_voltage, _meter_line_color
 from .state import ChargerState
 
+# Tamanho da janela deslizante de state.history — ver
+# EVChargerSim._record_history_sample(). Com o intervalo padrão de
+# MeterValues (30s), 120 amostras cobrem 1h de histórico por charger;
+# não é configurável via CLI de propósito (é só pro gráfico do painel,
+# não pra análise de longo prazo — ver README pra exportar via /api/state
+# se precisar de mais).
+_HISTORY_MAX_SAMPLES = 120
+
 class EVChargerSim(BaseChargePoint):
     """
     Representa um Charge Point AC genérico do ponto de vista do protocolo.
@@ -1495,6 +1503,28 @@ class EVChargerSim(BaseChargePoint):
             ],
         )
 
+    def _record_history_sample(self, power_kw: float, energy_kwh: float):
+        """
+        Acrescenta uma amostra à janela de histórico deste charger — usada
+        por GET /api/history/<id> pro gráfico expansível de cada card no
+        painel web. Uma amostra por ciclo de MeterValues, COM ou SEM
+        sessão ativa (os períodos ociosos também aparecem no gráfico,
+        em vez de deixar buracos). Janela deslizante de tamanho fixo
+        (_HISTORY_MAX_SAMPLES) — remove do início, não reseta a cada
+        sessão nova, pra dar uma linha do tempo contínua do charger.
+        """
+        state = self.state
+        state.history.append({
+            "t": datetime.now(timezone.utc).timestamp(),
+            "soc": round(state.battery_soc_percent, 1),
+            "actual_amps": state.current_actual_amps,
+            "offered_amps": state.current_offered_amps,
+            "power_kw": power_kw,
+        })
+        overflow = len(state.history) - _HISTORY_MAX_SAMPLES
+        if overflow > 0:
+            del state.history[:overflow]
+
     async def send_meter_values_loop(self, interval_seconds: int = 30):
         """
         Manda MeterValues periodicamente com a corrente "real" simulada
@@ -1519,6 +1549,7 @@ class EVChargerSim(BaseChargePoint):
 
                 power_kw = round((voltage_now * state.current_actual_amps) / 1000, 2)
                 energy_kwh = round(state.energy_meter_wh / 1000, 2)
+                self._record_history_sample(power_kw, energy_kwh)
 
                 has_session = state.active_transaction_id is not None
                 suspended = state.session_suspended or state.evse_suspended_by_profile
@@ -1835,6 +1866,16 @@ class EVChargerSim(BaseChargePoint):
             "reservation_id": s.reservation_id,
             "queue_len": len(s.offline_queue),
         }
+
+    def get_history(self) -> list:
+        """
+        Cópia da janela de amostras deste charger (ver
+        _record_history_sample) — consumida por GET /api/history/<id>
+        pro gráfico expansível do painel web. Cópia, não a lista
+        interna, pra quem chamar não conseguir mutar state.history por
+        engano.
+        """
+        return list(self.state.history)
 
     def _cache_auth_result(self, id_tag: str, id_tag_info: dict):
         """

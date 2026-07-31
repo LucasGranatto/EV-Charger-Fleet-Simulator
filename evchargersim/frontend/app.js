@@ -388,6 +388,104 @@ async function sendBulkCommand(cmd, { args = [], confirmMessage, button } = {}) 
   // chargers afetados assim que o backend processar cada um.
 }
 
+// ── Gráfico expansível de histórico (SoC/corrente) por card ─────────
+//
+// Cada card tem seu próprio botão de toggle (📈) que abre um painel
+// com um gráfico de linha simples (sem dependência externa — 2
+// <polyline> num <svg> só). Ao contrário do resto do painel, isso NÃO
+// vem pelo /api/events: só é buscado sob demanda enquanto o painel
+// está aberto, via poll (não dá pra empurrar por SSE algo que só
+// interessa quando o usuário está de fato olhando aquele card
+// específico, e incluir o histórico de todo mundo em CADA snapshot do
+// SSE inflaria o payload à toa).
+const historyPollers = new Map(); // charge_point_id -> intervalId
+const HISTORY_POLL_MS = 4000;
+
+function stopHistoryPolling(chargeId) {
+  const intervalId = historyPollers.get(chargeId);
+  if (intervalId) {
+    clearInterval(intervalId);
+    historyPollers.delete(chargeId);
+  }
+}
+
+async function fetchAndRenderHistory(chargeId, panel) {
+  try {
+    const res = await apiFetch(`/api/history/${encodeURIComponent(chargeId)}`);
+    if (!res.ok) return; // 404 (charger removido nesse meio-tempo) — próximo poll silencia sozinho
+    renderHistoryChart(panel, await res.json());
+  } catch (e) {
+    // Silencioso de propósito: uma falha de rede pontual aqui não deve
+    // virar um toast a cada 4s — o próximo poll tenta de novo.
+  }
+}
+
+function toggleHistoryPanel(chargeId, panel) {
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  stopHistoryPolling(chargeId); // idempotente — evita 2 timers se o usuário clicar rápido
+  if (opening) {
+    fetchAndRenderHistory(chargeId, panel);
+    historyPollers.set(chargeId, setInterval(() => fetchAndRenderHistory(chargeId, panel), HISTORY_POLL_MS));
+  }
+}
+
+// Mapeia uma lista de valores para pontos "x,y" de um <polyline>,
+// normalizando pelo min/max informado (ou pelo min/max da própria
+// série, se omitido). Achata a escala se hi==lo (série constante) pra
+// não dividir por zero.
+function buildLinePoints(values, w, h, padY, minVal, maxVal) {
+  const n = values.length;
+  let lo = minVal, hi = maxVal;
+  if (lo == null || hi == null) {
+    lo = Math.min(...values);
+    hi = Math.max(...values);
+  }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const usableH = h - padY * 2;
+  return values.map((v, i) => {
+    const x = n === 1 ? 0 : (i / (n - 1)) * w;
+    const y = padY + usableH - ((v - lo) / (hi - lo)) * usableH;
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
+function renderHistoryChart(panel, samples) {
+  const svg = panel.querySelector('[data-role="history-svg"]');
+  const emptyMsg = panel.querySelector('[data-role="history-empty"]');
+  const nowSoc = panel.querySelector('[data-role="history-soc-now"]');
+  const nowAmps = panel.querySelector('[data-role="history-amps-now"]');
+  const windowLabel = panel.querySelector('[data-role="history-window"]');
+
+  if (!samples || samples.length < 2) {
+    svg.innerHTML = "";
+    emptyMsg.hidden = false;
+    nowSoc.textContent = "—";
+    nowAmps.textContent = "—";
+    windowLabel.textContent = "";
+    return;
+  }
+  emptyMsg.hidden = true;
+
+  const W = 300, H = 110, PAD = 8;
+  const ampsSeries = samples.map((s) => s.actual_amps);
+  const socPoints = buildLinePoints(samples.map((s) => s.soc), W, H, PAD, 0, 100);
+  const ampsPoints = buildLinePoints(ampsSeries, W, H, PAD, 0, Math.max(32, ...ampsSeries));
+
+  svg.innerHTML = `
+    <line x1="0" y1="${H - PAD}" x2="${W}" y2="${H - PAD}" class="history-axis" />
+    <polyline points="${ampsPoints}" class="history-line history-line-amps" />
+    <polyline points="${socPoints}" class="history-line history-line-soc" />
+  `;
+
+  const last = samples[samples.length - 1];
+  nowSoc.textContent = `${last.soc}%`;
+  nowAmps.textContent = `${last.actual_amps}A`;
+
+  const spanMin = Math.max(0, (last.t - samples[0].t) / 60);
+  windowLabel.textContent = spanMin < 1 ? "últimos segundos" : `últimos ${Math.round(spanMin)}min`;
+}
+
 // ── Construção/atualização de cards (diff, não innerHTML) ───────────
 
 function displayStatus(c) {
@@ -414,7 +512,12 @@ function createCard(c) {
         <span class="led" data-role="led"></span>
         <span class="cp-id">${escapeHtml(c.charge_point_id)}</span>
       </div>
-      <span class="pill" data-role="pill"></span>
+      <div class="card-top-right">
+        <span class="pill" data-role="pill"></span>
+        <button class="icon-btn" data-role="history-toggle" type="button" title="Ver histórico de SoC/corrente">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.5V2.5h1v10h11.5v1H2ZM4 11l2.8-4 2.4 2.8L13.5 3l.8.6-5.3 6.9-2.4-2.8L4.8 11.7 4 11Z"/></svg>
+        </button>
+      </div>
     </div>
     <div class="wave" data-role="wave">
       <div class="wave-track">
@@ -444,6 +547,17 @@ function createCard(c) {
       <div class="telemetry-item">
         <span class="telemetry-label">Fila offline</span>
         <span class="telemetry-value" data-role="queue"></span>
+      </div>
+    </div>
+    <div class="history-panel" data-role="history-panel" hidden>
+      <div class="history-chart-wrap">
+        <svg class="history-chart" viewBox="0 0 300 110" preserveAspectRatio="none" data-role="history-svg" aria-hidden="true"></svg>
+        <span class="history-empty" data-role="history-empty">ainda sem amostras suficientes — aguarde o próximo ciclo de MeterValues</span>
+      </div>
+      <div class="history-legend">
+        <span class="legend-item legend-soc"><i></i>SoC <b data-role="history-soc-now">—</b></span>
+        <span class="legend-item legend-amps"><i></i>Corrente <b data-role="history-amps-now">—</b></span>
+        <span class="history-window" data-role="history-window"></span>
       </div>
     </div>
     <div class="control-strip">
@@ -489,6 +603,9 @@ function createCard(c) {
     sendCommand(chargeId, "disconnect", []));
   el.querySelector('[data-role="btn-remove"]').addEventListener("click", () =>
     removeCharger(chargeId));
+
+  el.querySelector('[data-role="history-toggle"]').addEventListener("click", () =>
+    toggleHistoryPanel(chargeId, el.querySelector('[data-role="history-panel"]')));
 
   updateCard(el, c);
   return el;
@@ -621,6 +738,7 @@ function syncGrid(chargers) {
     if (!seen.has(id)) {
       el.remove();
       cardElements.delete(id);
+      stopHistoryPolling(id);
     }
   }
 

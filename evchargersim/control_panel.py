@@ -12,6 +12,12 @@ asyncio principal (onde vivem as instâncias de EVChargerSim) é feita via
 asyncio.run_coroutine_threadsafe(...).result(timeout=...) em cada
 requisição.
 
+GET /api/history/<charge_point_id> retorna a janela de amostras
+(SoC/corrente/potência) desse charger — ver
+EVChargerSim.get_history()/_record_history_sample(). Sob demanda, fora
+do SSE de propósito: só é consultada quando o gráfico de um card
+específico está expandido no painel, não a cada snapshot.
+
 /api/events é Server-Sent Events (SSE): mantém a conexão aberta e empurra
 um novo snapshot só quando algo de fato muda (comparação por igualdade
 do JSON serializado), com um comentário de keepalive periódico pra não
@@ -191,6 +197,23 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                     self._reject_unauthorized()
                     return
                 self._handle_sse()
+            elif clean_path.startswith("/api/history/"):
+                if not self._is_authorized():
+                    self._reject_unauthorized()
+                    return
+                # Janela de amostras (SoC/corrente/potência) de UM
+                # charger — consumida sob demanda (não pelo SSE) só
+                # quando o card correspondente está com o gráfico
+                # expandido no painel. Ver EVChargerSim.get_history() /
+                # _record_history_sample().
+                charge_point_id = urllib.parse.unquote(clean_path[len("/api/history/"):])
+                cp = registry.get(charge_point_id)
+                if cp is None:
+                    self._send_json(
+                        {"error": f"charger '{charge_point_id}' não conectado ainda"}, status=404
+                    )
+                    return
+                self._send_json(cp.get_history())
             else:
                 self._send_json({"error": "not found"}, status=404)
 
