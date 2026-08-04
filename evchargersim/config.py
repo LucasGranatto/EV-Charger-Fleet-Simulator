@@ -43,6 +43,7 @@ CHARGER_OVERRIDE_FIELDS = frozenset({
     "chaos_latency_min_ms",
     "chaos_latency_max_ms",
     "chaos_drop_rate",
+    "max_offline_queue_size",
 })
 
 
@@ -81,6 +82,14 @@ class SimConfig:
     chaos_latency_min_ms: float = 0.0
     chaos_latency_max_ms: float = 0.0
     chaos_drop_rate: float = 0.0  # 0.0-1.0
+
+    # Teto da fila offline (offline_queue) de CADA charger — sem isso,
+    # um charger desconectado por muito tempo (CSMS caído, chaos-
+    # disconnect prolongado) acumula toda mensagem "queueable"
+    # indefinidamente, e a reconexão despeja tudo de uma vez no CSMS.
+    # 0 desabilita o teto (comportamento antigo, sem limite — use com
+    # cautela). Ver EVChargerSim._enqueue_offline().
+    max_offline_queue_size: int = 500
 
     # ── Modo frota (multi-charger) — ver --fleet no help da CLI. Quando
     # fleet_ids não é vazio, main() ignora charge_point_id/connector_id
@@ -158,6 +167,7 @@ class SimConfig:
             "chaos_latency_min_ms": args.chaos_latency_min,
             "chaos_latency_max_ms": args.chaos_latency_max,
             "chaos_drop_rate": args.chaos_drop_rate,
+            "max_offline_queue_size": args.max_offline_queue,
             "control_port": args.control_port,
             "persist_file": args.persist_file,
             "control_token": args.control_token,
@@ -216,6 +226,10 @@ def _parse_args(argv=None):
                          help="Atraso máximo artificial (ms) por mensagem (padrão: 0).")
     parser.add_argument("--chaos-drop-rate", type=float, default=None,
                          help="Probabilidade (0.0–1.0) de perda simulada de mensagem (padrão: 0.0).")
+    parser.add_argument("--max-offline-queue", type=int, default=None,
+                         help="Teto da fila offline de cada charger — ao exceder, a mensagem "
+                              "mais antiga é descartada para abrir espaço (padrão: 500). "
+                              "0 desabilita o teto (sem limite — use com cautela).")
     parser.add_argument("--verbose", action="store_true",
                          help="Mostra Heartbeat/GetConfiguration no terminal (padrão: silenciosos).")
     parser.add_argument("--console", action="store_true",

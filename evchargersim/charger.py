@@ -168,13 +168,30 @@ class EVChargerSim(BaseChargePoint):
         self._profile_task = None
 
     def _enqueue_offline(self, kind: str, request, local_tx_id: int | None = None):
-        """Acrescenta uma mensagem à fila offline, pra reenvio na próxima reconexão."""
-        self.state.offline_queue.append(
+        """
+        Acrescenta uma mensagem à fila offline, pra reenvio na próxima
+        reconexão. Respeita config.max_offline_queue_size (0 = sem
+        teto): ao atingir o limite, descarta a mais ANTIGA (FIFO) antes
+        de enfileirar a nova — sem isso, um charger desconectado por
+        muito tempo (CSMS caído, chaos-disconnect prolongado) acumula
+        mensagem sem parar, e a reconexão despejaria tudo de uma vez no
+        CSMS. Um charger real também tem buffer local finito.
+        """
+        queue = self.state.offline_queue
+        max_size = self.config.max_offline_queue_size
+        if max_size > 0 and len(queue) >= max_size:
+            dropped = queue.pop(0)
+            self.log.warning(
+                f"[FILA OFFLINE] cheia ({max_size} mensagem(ns)) — descartando a mais "
+                f"antiga ('{dropped['kind']}') para abrir espaço para '{kind}'. Ajuste "
+                f"--max-offline-queue se isso não for desejado para este teste."
+            )
+        queue.append(
             {"kind": kind, "request": request, "local_tx_id": local_tx_id}
         )
         self.log.info(
             f"[FILA OFFLINE] '{kind}' enfileirado "
-            f"(fila agora com {len(self.state.offline_queue)} mensagem(ns))."
+            f"(fila agora com {len(queue)} mensagem(ns))."
         )
 
     async def _call_or_queue(
@@ -257,10 +274,19 @@ class EVChargerSim(BaseChargePoint):
             delay_s = delay_ms / 1000
             if delay_s >= remaining_timeout:
                 await asyncio.sleep(remaining_timeout)
+                # Diferente do timeout real mais abaixo: self.call() nunca
+                # chega a ser invocado aqui, então a mensagem NUNCA saiu do
+                # processo (equivalente ao chaos_drop_rate acima, não ao
+                # asyncio.TimeoutError pós-envio) — reenfileirar é seguro,
+                # sem risco da duplicata que o timeout pós-envio evita.
                 self.log.warning(
-                    f"[CSMS] '{kind}' não teve resposta em {timeout}s (orçamento "
-                    "consumido por latência simulada — chaos_latency)."
+                    f"[CSMS] '{kind}' nem chegou a ser enviada — orçamento de "
+                    f"{timeout}s todo consumido por latência simulada "
+                    "(chaos_latency) antes do envio."
                 )
+                if queueable:
+                    self._enqueue_offline(kind, request, local_tx_id=local_tx_id)
+                    return _result(None, True)
                 return _result(None, False)
             if delay_s > 0:
                 await asyncio.sleep(delay_s)
