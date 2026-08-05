@@ -161,9 +161,67 @@ svg { fill: currentColor; }
   border: 1px solid var(--border);
   color: var(--text-faint);
   background: transparent;
+  position: relative;
 }
 .icon-btn svg { width: 14px; height: 14px; }
 .icon-btn:hover:not(:disabled) { color: var(--teal); border-color: var(--teal-dim); background: var(--teal-dim); }
+
+.chaos-active-dot {
+  position: absolute;
+  top: -2px;
+  right: -2px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--amber);
+  box-shadow: 0 0 4px var(--amber), 0 0 0 2px var(--surface);
+}
+
+/* ── Painel de ajuste de chaos por card (ao vivo) ─────────────────── */
+.chaos-panel {
+  margin: -4px 0 14px;
+  padding: 10px 10px 9px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border-soft);
+  border-radius: var(--radius-sm);
+}
+
+.chaos-hint {
+  margin: 0 0 8px;
+  font-size: 10.5px;
+  color: var(--text-faint);
+  font-style: italic;
+  line-height: 1.4;
+}
+
+.chaos-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 10px;
+}
+
+.chaos-grid label {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  font-size: 10px;
+  color: var(--text-dim);
+}
+
+.chaos-grid input[type=number] { width: 100%; }
+
+.chaos-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 9px;
+}
+
+.chaos-status {
+  font-size: 11px;
+  color: var(--green);
+}
+.chaos-status.chaos-status-error { color: var(--red); }
 
 .stats-strip {
   display: flex;

@@ -388,6 +388,78 @@ async function sendBulkCommand(cmd, { args = [], confirmMessage, button } = {}) 
   // chargers afetados assim que o backend processar cada um.
 }
 
+// ── Painel de ajuste de chaos por card (ao vivo, sem remover/readicionar) ──
+//
+// Ao contrário do histórico, os valores de chaos JÁ vêm em todo
+// snapshot do SSE (campo c.chaos, ver get_status_dict() em
+// charger.py) — não precisa de fetch próprio. O truque é só
+// pré-preencher o formulário UMA VEZ, no momento em que o usuário abre
+// o painel (não a cada snapshot, ou ficaria impossível digitar: o
+// campo resetaria a cada ~1s enquanto uma sessão está ativa). O
+// snapshot mais recente fica guardado em cardEl._chaosSnapshot,
+// atualizado em silêncio por updateCard() a cada refresh.
+const CHAOS_FIELD_ROLES = {
+  "chaos-disconnect-interval": "chaos_disconnect_interval_seconds",
+  "chaos-disconnect-jitter": "chaos_disconnect_jitter_seconds",
+  "chaos-latency-min": "chaos_latency_min_ms",
+  "chaos-latency-max": "chaos_latency_max_ms",
+  "chaos-drop-rate": "chaos_drop_rate",
+  "chaos-max-queue": "max_offline_queue_size",
+};
+
+function populateChaosForm(cardEl, chaos) {
+  for (const [role, field] of Object.entries(CHAOS_FIELD_ROLES)) {
+    const input = cardEl.querySelector(`[data-role="${role}"]`);
+    if (input) input.value = chaos[field] ?? 0;
+  }
+}
+
+function toggleChaosPanel(cardEl) {
+  const panel = cardEl.querySelector('[data-role="chaos-panel"]');
+  const opening = panel.hidden;
+  panel.hidden = !opening;
+  if (opening) {
+    populateChaosForm(cardEl, cardEl._chaosSnapshot || {});
+    cardEl.querySelector('[data-role="chaos-status"]').textContent = "";
+  }
+}
+
+async function applyChaos(chargeId, cardEl) {
+  const btn = cardEl.querySelector('[data-role="chaos-apply"]');
+  const statusEl = cardEl.querySelector('[data-role="chaos-status"]');
+  const payload = {};
+  for (const [role, field] of Object.entries(CHAOS_FIELD_ROLES)) {
+    const input = cardEl.querySelector(`[data-role="${role}"]`);
+    const value = parseFloat(input.value);
+    payload[field] = Number.isFinite(value) ? value : 0;
+  }
+
+  btn.disabled = true;
+  statusEl.textContent = "aplicando...";
+  statusEl.classList.remove("chaos-status-error");
+  try {
+    const res = await apiFetch(`/api/chargers/${encodeURIComponent(chargeId)}/chaos`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      statusEl.textContent = "aplicado ✓";
+    } else {
+      statusEl.textContent = "erro";
+      statusEl.classList.add("chaos-status-error");
+      toast(data.message, "error");
+    }
+  } catch (e) {
+    statusEl.textContent = "falhou";
+    statusEl.classList.add("chaos-status-error");
+    toast(`Falha ao ajustar chaos de ${chargeId}: ${e}`, "error");
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ── Gráfico expansível de histórico (SoC/corrente) por card ─────────
 //
 // Cada card tem seu próprio botão de toggle (📈) que abre um painel
@@ -517,6 +589,10 @@ function createCard(c) {
         <button class="icon-btn" data-role="history-toggle" type="button" title="Ver histórico de SoC/corrente">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.5V2.5h1v10h11.5v1H2ZM4 11l2.8-4 2.4 2.8L13.5 3l.8.6-5.3 6.9-2.4-2.8L4.8 11.7 4 11Z"/></svg>
         </button>
+        <button class="icon-btn" data-role="chaos-toggle" type="button" title="Ajustar chaos deste charger">
+          <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 6.6 6H2l3.6 3-1.4 5L8 11l3.8 3-1.4-5L14 6H9.4L8 1Z"/></svg>
+          <span class="chaos-active-dot" data-role="chaos-active-dot" hidden></span>
+        </button>
       </div>
     </div>
     <div class="wave" data-role="wave">
@@ -558,6 +634,33 @@ function createCard(c) {
         <span class="legend-item legend-soc"><i></i>SoC <b data-role="history-soc-now">—</b></span>
         <span class="legend-item legend-amps"><i></i>Corrente <b data-role="history-amps-now">—</b></span>
         <span class="history-window" data-role="history-window"></span>
+      </div>
+    </div>
+    <div class="chaos-panel" data-role="chaos-panel" hidden>
+      <p class="chaos-hint">Aplica em tempo real, sem remover/readicionar. 0 desliga cada chaos individualmente.</p>
+      <div class="chaos-grid">
+        <label>Desconexão a cada (s)
+          <input type="number" min="0" step="1" data-role="chaos-disconnect-interval">
+        </label>
+        <label>± jitter (s)
+          <input type="number" min="0" step="1" data-role="chaos-disconnect-jitter">
+        </label>
+        <label>Latência mín (ms)
+          <input type="number" min="0" step="1" data-role="chaos-latency-min">
+        </label>
+        <label>Latência máx (ms)
+          <input type="number" min="0" step="1" data-role="chaos-latency-max">
+        </label>
+        <label>Perda de msg (0–1)
+          <input type="number" min="0" max="1" step="0.05" data-role="chaos-drop-rate">
+        </label>
+        <label>Teto fila offline
+          <input type="number" min="0" step="1" data-role="chaos-max-queue">
+        </label>
+      </div>
+      <div class="chaos-actions">
+        <button class="btn-primary" data-role="chaos-apply" type="button">Aplicar</button>
+        <span class="chaos-status" data-role="chaos-status"></span>
       </div>
     </div>
     <div class="control-strip">
@@ -607,6 +710,11 @@ function createCard(c) {
   el.querySelector('[data-role="history-toggle"]').addEventListener("click", () =>
     toggleHistoryPanel(chargeId, el.querySelector('[data-role="history-panel"]')));
 
+  el.querySelector('[data-role="chaos-toggle"]').addEventListener("click", () =>
+    toggleChaosPanel(el));
+  el.querySelector('[data-role="chaos-apply"]').addEventListener("click", () =>
+    applyChaos(chargeId, el));
+
   updateCard(el, c);
   return el;
 }
@@ -616,6 +724,14 @@ function updateCard(el, c) {
   const hasTx = c.active_transaction_id !== null;
 
   el.dataset.status = status;
+
+  // Guardado, não aplicado ao formulário aqui — ver toggleChaosPanel().
+  // Reaplicar a cada snapshot (a cada ~1s com sessão ativa) tornaria
+  // impossível digitar num campo enquanto o painel de chaos está aberto.
+  const chaos = c.chaos || {};
+  el._chaosSnapshot = chaos;
+  const chaosActive = Object.values(chaos).some((v) => v > 0);
+  el.querySelector('[data-role="chaos-active-dot"]').hidden = !chaosActive;
 
   const led = el.querySelector('[data-role="led"]');
   led.className = `led ${status}`;
