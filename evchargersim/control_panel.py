@@ -18,6 +18,14 @@ EVChargerSim.get_history()/_record_history_sample(). Sob demanda, fora
 do SSE de propósito: só é consultada quando o gráfico de um card
 específico está expandido no painel, não a cada snapshot.
 
+POST /api/chargers/<charge_point_id>/chaos ajusta os parâmetros de
+chaos (desconexão, latência, drop rate, teto da fila offline) de um
+charger JÁ CONECTADO, em tempo real — ver
+EVChargerSim.apply_chaos_overrides(). Diferente dos overrides de
+POST /api/chargers (que só valem na CRIAÇÃO do charger), este endpoint
+muda a config de uma sessão já em andamento, sem precisar remover/
+readicionar.
+
 /api/events é Server-Sent Events (SSE): mantém a conexão aberta e empurra
 um novo snapshot só quando algo de fato muda (comparação por igualdade
 do JSON serializado), com um comentário de keepalive periódico pra não
@@ -281,6 +289,8 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._handle_command_all()
             elif self.path == "/api/chargers":
                 self._handle_add_charger()
+            elif self.path.startswith("/api/chargers/") and self.path.endswith("/chaos"):
+                self._handle_set_chaos()
             else:
                 self._send_json({"error": "not found"}, status=404)
 
@@ -343,6 +353,45 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._send_json({"ok": False, "message": str(exc)}, status=400)
             except Exception as exc:
                 logger.exception(f"[PAINEL] erro adicionando charger '{charge_point_id}'")
+                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+
+        def _handle_set_chaos(self):
+            """
+            POST /api/chargers/<id>/chaos —
+            {"chaos_disconnect_interval_seconds": 30, "chaos_drop_rate": 0.1, ...}.
+            Ajusta chaos de um charger JÁ CONECTADO em tempo real (sem
+            precisar remover/readicionar) — whitelist e validação de
+            valor vivem em EVChargerSim.apply_chaos_overrides(), não
+            aqui; este handler só cuida de parsing/roteamento/resposta,
+            no mesmo padrão dos outros handlers de POST.
+            """
+            try:
+                payload = self._read_json_body()
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+                return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
+                return
+
+            prefix, suffix = "/api/chargers/", "/chaos"
+            charge_point_id = urllib.parse.unquote(self.path[len(prefix):-len(suffix)])
+            cp = registry.get(charge_point_id)
+            if cp is None:
+                self._send_json(
+                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
+                    status=404,
+                )
+                return
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(cp.apply_chaos_overrides(payload), loop)
+                message = future.result(timeout=15)
+                self._send_json({"ok": True, "message": message})
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=400)
+            except Exception as exc:
+                logger.exception(f"[PAINEL] erro ajustando chaos de '{charge_point_id}'")
                 self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
 
         def _handle_command(self):

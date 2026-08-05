@@ -55,6 +55,22 @@ from .state import ChargerState
 # se precisar de mais).
 _HISTORY_MAX_SAMPLES = 120
 
+# Campos de chaos ajustáveis AO VIVO via POST /api/chargers/<id>/chaos
+# — ver EVChargerSim.apply_chaos_overrides(). Mesmo conjunto de nomes
+# de CHARGER_OVERRIDE_FIELDS (config.py) restrito só aos de chaos —
+# não reaproveita a constante de lá de propósito: aquela também inclui
+# campos que só fazem sentido na CRIAÇÃO do charger (bateria/SoC
+# inicial/corrente padrão), que não devem ser editáveis depois que a
+# sessão já está rodando.
+_CHAOS_FIELDS = frozenset({
+    "chaos_disconnect_interval_seconds",
+    "chaos_disconnect_jitter_seconds",
+    "chaos_latency_min_ms",
+    "chaos_latency_max_ms",
+    "chaos_drop_rate",
+    "max_offline_queue_size",
+})
+
 class EVChargerSim(BaseChargePoint):
     """
     Representa um Charge Point AC genérico do ponto de vista do protocolo.
@@ -1891,6 +1907,19 @@ class EVChargerSim(BaseChargePoint):
             "availability_status": s.availability_status,
             "reservation_id": s.reservation_id,
             "queue_len": len(s.offline_queue),
+            # Valores ATUAIS de config (não do boot) — refletem qualquer
+            # ajuste feito ao vivo via POST /api/chargers/<id>/chaos, ver
+            # apply_chaos_overrides(). O painel usa isso pra pré-preencher
+            # o formulário de chaos de cada card com o que está valendo
+            # de fato agora, não com o que foi passado no --fleet/CLI.
+            "chaos": {
+                "chaos_disconnect_interval_seconds": self.config.chaos_disconnect_interval_seconds,
+                "chaos_disconnect_jitter_seconds": self.config.chaos_disconnect_jitter_seconds,
+                "chaos_latency_min_ms": self.config.chaos_latency_min_ms,
+                "chaos_latency_max_ms": self.config.chaos_latency_max_ms,
+                "chaos_drop_rate": self.config.chaos_drop_rate,
+                "max_offline_queue_size": self.config.max_offline_queue_size,
+            },
         }
 
     def get_history(self) -> list:
@@ -1902,6 +1931,42 @@ class EVChargerSim(BaseChargePoint):
         engano.
         """
         return list(self.state.history)
+
+    async def apply_chaos_overrides(self, overrides: dict) -> str:
+        """
+        Ajusta parâmetros de chaos deste charger JÁ CONECTADO, em tempo
+        real — usado por POST /api/chargers/<id>/chaos no painel web.
+        Muda os campos direto em self.config, o MESMO objeto lido a
+        cada chamada por _call_or_queue() (chaos_latency/drop_rate) e a
+        cada ciclo por _chaos_disconnect_loop() (orchestrator.py) — o
+        efeito é imediato, sem precisar remover/readicionar o charger.
+
+        `async def` só por consistência com o resto da API do painel
+        (chega via run_coroutine_threadsafe, como execute_command()) —
+        não há nenhum await de verdade aqui dentro, é tudo síncrono.
+        """
+        unknown = set(overrides) - _CHAOS_FIELDS
+        if unknown:
+            raise ValueError(f"campo(s) inválido(s) para chaos: {', '.join(sorted(unknown))}")
+        if not overrides:
+            raise ValueError("nenhum campo de chaos informado")
+
+        applied = []
+        for key, raw_value in overrides.items():
+            caster = int if key == "max_offline_queue_size" else float
+            try:
+                value = caster(raw_value)
+            except (TypeError, ValueError):
+                raise ValueError(f"valor inválido para '{key}': {raw_value!r}")
+            if value < 0:
+                raise ValueError(f"'{key}' não pode ser negativo")
+            if key == "chaos_drop_rate" and value > 1.0:
+                raise ValueError("chaos_drop_rate deve estar entre 0.0 e 1.0")
+            setattr(self.config, key, value)
+            applied.append(f"{key}={value}")
+
+        self.log.warning(f"[CHAOS] ajustado ao vivo via painel: {', '.join(applied)}")
+        return f"chaos atualizado: {', '.join(applied)}"
 
     def _cache_auth_result(self, id_tag: str, id_tag_info: dict):
         """
