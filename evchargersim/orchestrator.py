@@ -67,16 +67,33 @@ async def _chaos_disconnect_loop(cp: "EVChargerSim", config: SimConfig, logger: 
     """
     Se configurado, derruba o WebSocket em intervalos (± jitter) — pra
     testar reconexão/fila offline sem derrubar o servidor manualmente.
-    Roda para sempre; cada ciclo espera de novo antes da próxima queda.
+
+    Roda para sempre, MESMO se começar com chaos desligado (interval
+    <= 0) — faz um polling ocioso curto nesse caso, em vez de sair de
+    cena. Sem isso, ligar o chaos depois pelo painel web (POST
+    /api/chargers/<id>/chaos, ver EVChargerSim.apply_chaos_overrides)
+    não teria efeito nenhum: essa task só é criada UMA VEZ por charger
+    (na 1ª conexão, não a cada reconexão), então se ela retornasse de
+    cara por não ter chaos configurado no boot, não sobraria nada
+    rodando pra reagir a uma mudança posterior.
+
+    Reconfere config.chaos_disconnect_interval_seconds tanto antes de
+    dormir (pra saber quanto esperar) quanto depois de acordar (pra não
+    derrubar a conexão à toa se o chaos foi desligado nesse meio-tempo).
     """
-    if config.chaos_disconnect_interval_seconds <= 0:
-        return
+    idle_poll_seconds = 2.0
     while True:
+        interval = config.chaos_disconnect_interval_seconds
+        if interval <= 0:
+            await asyncio.sleep(idle_poll_seconds)
+            continue
         jitter = random.uniform(
             -config.chaos_disconnect_jitter_seconds, config.chaos_disconnect_jitter_seconds
         )
-        wait = max(1.0, config.chaos_disconnect_interval_seconds + jitter)
+        wait = max(1.0, interval + jitter)
         await asyncio.sleep(wait)
+        if config.chaos_disconnect_interval_seconds <= 0:
+            continue  # desligado durante a espera — não derruba, volta a fazer polling ocioso
         if cp.is_online and cp._connection is not None:
             logger.warning("[CHAOS] derrubando conexão de propósito (chaos_disconnect_interval)...")
             try:
