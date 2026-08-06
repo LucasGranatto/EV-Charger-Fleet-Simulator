@@ -166,15 +166,31 @@ svg { fill: currentColor; }
 .icon-btn svg { width: 14px; height: 14px; }
 .icon-btn:hover:not(:disabled) { color: var(--teal); border-color: var(--teal-dim); background: var(--teal-dim); }
 
-.chaos-active-dot {
+/* Badge de contagem no ícone de chaos — em teal (a cor de "dado vivo"
+   já usada pro SoC/SSE), não âmbar. O dot âmbar antigo dava a entender
+   "atenção, algo errado" mesmo em uso normal, e ainda pior: acendia
+   sempre, porque a checagem antiga contava max_offline_queue_size
+   (teto de fila, default 500 > 0) como se fosse chaos ativo — ver
+   activeChaosGroups()/updateChaosIndicators() em app.js. Agora só
+   acende com chaos de verdade ligado, e mostra QUANTOS grupos (não
+   só "tem algo"), com o detalhe no title do botão e no resumo do
+   painel expandido. */
+.chaos-badge {
   position: absolute;
-  top: -2px;
-  right: -2px;
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-  background: var(--amber);
-  box-shadow: 0 0 4px var(--amber), 0 0 0 2px var(--surface);
+  top: -4px;
+  right: -4px;
+  min-width: 13px;
+  height: 13px;
+  padding: 0 3px;
+  border-radius: 7px;
+  background: var(--teal);
+  color: var(--bg);
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--font-mono);
+  line-height: 13px;
+  text-align: center;
+  box-shadow: 0 0 0 2px var(--surface);
 }
 
 /* ── Painel de ajuste de chaos por card (ao vivo) ─────────────────── */
@@ -194,10 +210,36 @@ svg { fill: currentColor; }
   line-height: 1.4;
 }
 
+/* Resumo textual do que está em efeito agora — a resposta direta pra
+   "uma vez ativado, quais das opções estão valendo?". Atualizado a
+   cada snapshot (ver updateChaosIndicators em app.js), não só quando
+   o painel abre. */
+.chaos-active-summary {
+  margin: 0 0 9px;
+  padding: 6px 8px;
+  border-radius: var(--radius-sm);
+  font-size: 10.5px;
+  color: var(--text-faint);
+  background: var(--surface);
+  border: 1px solid var(--border-soft);
+}
+.chaos-active-summary.chaos-active-summary-on {
+  color: var(--teal);
+  border-color: var(--teal-dim);
+  background: var(--teal-dim);
+  font-weight: 500;
+}
+
 .chaos-grid {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: 6px 10px;
+}
+
+.chaos-grid-secondary {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-soft);
 }
 
 .chaos-grid label {
@@ -206,6 +248,27 @@ svg { fill: currentColor; }
   gap: 3px;
   font-size: 10px;
   color: var(--text-dim);
+  padding: 3px 4px;
+  border-radius: 5px;
+  border: 1px solid transparent;
+  transition: background-color 0.2s, border-color 0.2s;
+}
+
+/* Destaque por campo — junto com o resumo acima, é aqui que dá pra
+   ver de relance QUAL grupo está de fato em efeito, campo a campo,
+   em vez de só saber que "tem chaos ligado" em algum lugar. */
+.chaos-grid label.active {
+  color: var(--text);
+  background: var(--teal-dim);
+  border-color: var(--teal-dim);
+}
+
+.chaos-field-note {
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-faint);
+  text-transform: none;
+  letter-spacing: 0;
 }
 
 .chaos-grid input[type=number] { width: 100%; }
@@ -567,12 +630,36 @@ svg { fill: currentColor; }
 
 .history-chart-wrap {
   position: relative;
-  height: 92px;
+  height: 104px;
 }
 
 .history-chart { width: 100%; height: 100%; overflow: visible; }
 
-.history-axis { stroke: var(--border); stroke-width: 1; }
+/* Grade horizontal na escala de SoC — a "régua" que faltava pro
+   gráfico dar um número aproximado só de olhar, sem depender do
+   legend abaixo. Base (0%) um pouco mais forte, como o chão do
+   gráfico; as demais linhas ficam bem discretas pra não competir
+   com os dados. */
+.history-grid { stroke: var(--border-soft); stroke-width: 1; }
+.history-grid-base { stroke: var(--border); }
+
+.history-axis-label {
+  font-family: var(--font-mono);
+  font-size: 7.5px;
+  fill: var(--text-faint);
+}
+.history-axis-label-soc { fill: var(--teal); opacity: 0.75; }
+.history-axis-label-amps { fill: var(--green); opacity: 0.75; }
+.history-axis-label-time { fill: var(--text-faint); font-style: italic; }
+
+/* Área preenchida sob a linha de SoC — transforma a linha solta de
+   antes num "nível de bateria" visualmente óbvio, do jeito que um
+   medidor de carga costuma ser lido. */
+.history-area-soc {
+  fill: var(--teal);
+  opacity: 0.08;
+  stroke: none;
+}
 
 .history-line {
   fill: none;
@@ -580,7 +667,27 @@ svg { fill: currentColor; }
   vector-effect: non-scaling-stroke;
 }
 .history-line-soc { stroke: var(--teal); }
-.history-line-amps { stroke: var(--green); opacity: 0.85; }
+.history-line-amps { stroke: var(--green); opacity: 0.9; }
+
+/* Limite oferecido pelo CSMS (SetChargingProfile) — tracejada e mais
+   discreta que a corrente real, de propósito: a pergunta que ela
+   responde é "o carro está sendo segurado pelo limite do CSMS, ou é
+   a própria bateria (tapering) que está reduzindo a corrente?" — um
+   vão entre esta linha e a verde de corrente real é a resposta visual
+   a essa pergunta, sem precisar ler nenhum número. */
+.history-line-offered {
+  stroke: var(--text-faint);
+  stroke-width: 1.25;
+  stroke-dasharray: 3 2;
+  opacity: 0.8;
+}
+
+.history-dot {
+  stroke: var(--surface-raised);
+  stroke-width: 1.5;
+}
+.history-dot-soc { fill: var(--teal); }
+.history-dot-amps { fill: var(--green); }
 
 .history-empty {
   position: absolute;
@@ -621,6 +728,7 @@ svg { fill: currentColor; }
 }
 .legend-soc i { background: var(--teal); }
 .legend-amps i { background: var(--green); }
+.legend-offered i { background: repeating-linear-gradient(90deg, var(--text-faint) 0 3px, transparent 3px 5px); }
 .legend-item b {
   font-family: var(--font-mono);
   font-weight: 600;

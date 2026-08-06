@@ -414,6 +414,81 @@ function populateChaosForm(cardEl, chaos) {
   }
 }
 
+// Quais campos de fato ligam cada tipo de chaos — note que
+// max_offline_queue_size FICA DE FORA de propósito: é um teto de fila
+// (config normal, tem default 500 > 0), não uma instabilidade injetada.
+// Contá-lo como "chaos ativo" era o bug por trás do dot que parecia
+// aceso o tempo todo mesmo sem nenhum chaos de verdade ligado — ver
+// histórico de updateCard() antes desta versão. chaos_disconnect_jitter
+// também fica fora do gatilho (só tem efeito quando o intervalo > 0,
+// então é o intervalo que decide se "desconexão" está ativa).
+const CHAOS_GROUP_TRIGGER_FIELDS = {
+  disconnect: ["chaos_disconnect_interval_seconds"],
+  latency: ["chaos_latency_min_ms", "chaos_latency_max_ms"],
+  drop: ["chaos_drop_rate"],
+};
+
+function activeChaosGroups(chaos) {
+  return Object.entries(CHAOS_GROUP_TRIGGER_FIELDS)
+    .filter(([, fields]) => fields.some((f) => (chaos[f] || 0) > 0))
+    .map(([group]) => group);
+}
+
+function describeChaosGroup(group, chaos) {
+  switch (group) {
+    case "disconnect": {
+      const interval = chaos.chaos_disconnect_interval_seconds;
+      const jitter = chaos.chaos_disconnect_jitter_seconds || 0;
+      return jitter > 0
+        ? `desconexão a cada ~${interval}s (±${jitter}s)`
+        : `desconexão a cada ${interval}s`;
+    }
+    case "latency": {
+      const min = chaos.chaos_latency_min_ms || 0;
+      const max = chaos.chaos_latency_max_ms || 0;
+      return `latência ${min}–${max}ms`;
+    }
+    case "drop":
+      return `perda de msg ${Math.round((chaos.chaos_drop_rate || 0) * 100)}%`;
+    default:
+      return group;
+  }
+}
+
+// Substitui o antigo dot âmbar único (que só dizia "tem algo ligado",
+// sem dizer o quê — e ainda saía sempre aceso por causa do bug acima)
+// por: um badge neutro com a CONTAGEM de chaos ativos no ícone do
+// card, um resumo em texto no topo do painel expandido listando cada
+// um por nome/valor, e um destaque nos próprios campos do grupo ativo
+// dentro do formulário. Roda a cada snapshot (chamada de updateCard),
+// não só quando o painel abre — só mexe em classList/textContent,
+// nunca no <input> em si, então não atrapalha quem estiver digitando.
+function updateChaosIndicators(el, chaos) {
+  const groups = activeChaosGroups(chaos);
+  const descriptions = groups.map((g) => describeChaosGroup(g, chaos));
+
+  const badge = el.querySelector('[data-role="chaos-badge"]');
+  badge.hidden = groups.length === 0;
+  badge.textContent = String(groups.length);
+
+  const toggleBtn = el.querySelector('[data-role="chaos-toggle"]');
+  toggleBtn.title = groups.length === 0
+    ? "Ajustar chaos deste charger"
+    : `Chaos ativo: ${descriptions.join(" · ")}`;
+
+  const summary = el.querySelector('[data-role="chaos-active-summary"]');
+  if (summary) {
+    summary.textContent = groups.length === 0
+      ? "Nenhum chaos ativo no momento."
+      : `Ativo agora: ${descriptions.join(" · ")}`;
+    summary.classList.toggle("chaos-active-summary-on", groups.length > 0);
+  }
+
+  el.querySelectorAll("[data-chaos-group]").forEach((label) => {
+    label.classList.toggle("active", groups.includes(label.dataset.chaosGroup));
+  });
+}
+
 function toggleChaosPanel(cardEl) {
   const panel = cardEl.querySelector('[data-role="chaos-panel"]');
   const opening = panel.hidden;
@@ -503,10 +578,10 @@ function toggleHistoryPanel(chargeId, panel) {
 }
 
 // Mapeia uma lista de valores para pontos "x,y" de um <polyline>,
-// normalizando pelo min/max informado (ou pelo min/max da própria
-// série, se omitido). Achata a escala se hi==lo (série constante) pra
-// não dividir por zero.
-function buildLinePoints(values, w, h, padY, minVal, maxVal) {
+// dentro da área de plotagem [x0,x1]×[y0,y1], normalizando pelo
+// min/max informado (ou pelo min/max da própria série, se omitido).
+// Achata a escala se hi==lo (série constante) pra não dividir por zero.
+function buildLinePoints(values, x0, x1, y0, y1, minVal, maxVal) {
   const n = values.length;
   let lo = minVal, hi = maxVal;
   if (lo == null || hi == null) {
@@ -514,19 +589,38 @@ function buildLinePoints(values, w, h, padY, minVal, maxVal) {
     hi = Math.max(...values);
   }
   if (hi - lo < 1e-6) hi = lo + 1;
-  const usableH = h - padY * 2;
   return values.map((v, i) => {
-    const x = n === 1 ? 0 : (i / (n - 1)) * w;
-    const y = padY + usableH - ((v - lo) / (hi - lo)) * usableH;
+    const x = n === 1 ? x0 : x0 + (i / (n - 1)) * (x1 - x0);
+    const y = y1 - ((v - lo) / (hi - lo)) * (y1 - y0);
     return `${x.toFixed(1)},${y.toFixed(1)}`;
   }).join(" ");
 }
 
+// "há quanto tempo" de um timestamp relativo ao último ponto da série
+// — usado nos rótulos do eixo X, pra dar noção real de escala temporal
+// em vez de um gráfico "flutuando" sem referência de tempo.
+function formatSecondsAgo(secondsAgo) {
+  if (secondsAgo < 5) return "agora";
+  const minAgo = secondsAgo / 60;
+  return minAgo < 1 ? `-${Math.round(secondsAgo)}s` : `-${Math.round(minAgo)}min`;
+}
+
+// Gráfico de histórico — 3 séries sobre uma grade legível: SoC (área
+// preenchida + linha, escala fixa 0–100% no eixo esquerdo), corrente
+// real puxada e limite oferecido pelo CSMS (escala dinâmica no eixo
+// direito, 0–max). Ter as 3 juntas responde de relance a pergunta que
+// só números soltos não respondiam: "o carro está sendo limitado pelo
+// CSMS, ou é a própria bateria/tapering que está reduzindo a corrente?"
+// (linha verde de corrente real colada na cinza-tracejada de limite =
+// não; um vão entre elas = sim). Grade + rótulos de eixo (SoC à
+// esquerda, corrente à direita, tempo embaixo) dão a régua que faltava
+// pra tirar um número aproximado só de olhar, sem precisar do legend.
 function renderHistoryChart(panel, samples) {
   const svg = panel.querySelector('[data-role="history-svg"]');
   const emptyMsg = panel.querySelector('[data-role="history-empty"]');
   const nowSoc = panel.querySelector('[data-role="history-soc-now"]');
   const nowAmps = panel.querySelector('[data-role="history-amps-now"]');
+  const nowOffered = panel.querySelector('[data-role="history-offered-now"]');
   const windowLabel = panel.querySelector('[data-role="history-window"]');
 
   if (!samples || samples.length < 2) {
@@ -534,25 +628,81 @@ function renderHistoryChart(panel, samples) {
     emptyMsg.hidden = false;
     nowSoc.textContent = "—";
     nowAmps.textContent = "—";
+    if (nowOffered) nowOffered.textContent = "—";
     windowLabel.textContent = "";
     return;
   }
   emptyMsg.hidden = true;
 
-  const W = 300, H = 110, PAD = 8;
+  // Área de plotagem com margem pra rótulos de eixo — não usa mais o
+  // viewBox inteiro (era o motivo do gráfico antigo não ter onde
+  // colocar nenhuma escala sem sobrepor os dados).
+  const plotX0 = 32, plotX1 = 272, plotY0 = 10, plotY1 = 86;
+
+  const socSeries = samples.map((s) => s.soc);
   const ampsSeries = samples.map((s) => s.actual_amps);
-  const socPoints = buildLinePoints(samples.map((s) => s.soc), W, H, PAD, 0, 100);
-  const ampsPoints = buildLinePoints(ampsSeries, W, H, PAD, 0, Math.max(32, ...ampsSeries));
+  const offeredSeries = samples.map((s) => s.offered_amps);
+  const ampsMax = Math.max(32, ...ampsSeries, ...offeredSeries);
+
+  const socPoints = buildLinePoints(socSeries, plotX0, plotX1, plotY0, plotY1, 0, 100);
+  const ampsPoints = buildLinePoints(ampsSeries, plotX0, plotX1, plotY0, plotY1, 0, ampsMax);
+  const offeredPoints = buildLinePoints(offeredSeries, plotX0, plotX1, plotY0, plotY1, 0, ampsMax);
+  const socAreaPoints = `${plotX0},${plotY1} ${socPoints} ${plotX1},${plotY1}`;
+
+  // Grade horizontal na escala de SoC (0/25/50/75/100%) — a base (0%)
+  // sai um pouco mais forte, funcionando como o "chão" do gráfico.
+  const socTicks = [0, 25, 50, 75, 100];
+  const gridLines = socTicks.map((tick) => {
+    const y = (plotY1 - (tick / 100) * (plotY1 - plotY0)).toFixed(1);
+    return `<line x1="${plotX0}" y1="${y}" x2="${plotX1}" y2="${y}" class="history-grid${tick === 0 ? " history-grid-base" : ""}" />`;
+  }).join("");
+  const socLabels = socTicks.map((tick) => {
+    const y = (plotY1 - (tick / 100) * (plotY1 - plotY0) + 3).toFixed(1);
+    return `<text x="${plotX0 - 5}" y="${y}" class="history-axis-label history-axis-label-soc" text-anchor="end">${tick}</text>`;
+  }).join("");
+
+  // Eixo direito (corrente): só mín/máx, pra não competir visualmente
+  // com a grade de SoC — o objetivo aqui é dar a escala, não outra grade.
+  const ampsLabels = [0, ampsMax].map((val) => {
+    const y = (plotY1 - (val / ampsMax) * (plotY1 - plotY0) + 3).toFixed(1);
+    return `<text x="${plotX1 + 5}" y="${y}" class="history-axis-label history-axis-label-amps">${Math.round(val)}A</text>`;
+  }).join("");
+
+  // Eixo X: início da janela, meio e "agora" — dá noção real de
+  // quanto tempo o gráfico cobre sem precisar ler o texto do legend.
+  const tEnd = samples[samples.length - 1].t;
+  const tMid = samples[Math.floor(samples.length / 2)].t;
+  const xTicks = [
+    { x: plotX0, label: formatSecondsAgo(tEnd - samples[0].t), anchor: "start" },
+    { x: (plotX0 + plotX1) / 2, label: formatSecondsAgo(tEnd - tMid), anchor: "middle" },
+    { x: plotX1, label: "agora", anchor: "end" },
+  ];
+  const xLabels = xTicks.map(({ x, label, anchor }) =>
+    `<text x="${x}" y="${plotY1 + 14}" class="history-axis-label history-axis-label-time" text-anchor="${anchor}">${label}</text>`
+  ).join("");
+
+  // Ponto atual destacado em cada série — ancora visualmente onde o
+  // valor do legend está de fato "pousando" na linha.
+  const [lastSocX, lastSocY] = socPoints.split(" ").pop().split(",");
+  const [lastAmpsX, lastAmpsY] = ampsPoints.split(" ").pop().split(",");
 
   svg.innerHTML = `
-    <line x1="0" y1="${H - PAD}" x2="${W}" y2="${H - PAD}" class="history-axis" />
+    ${gridLines}
+    <polygon points="${socAreaPoints}" class="history-area-soc" />
+    <polyline points="${offeredPoints}" class="history-line history-line-offered" />
     <polyline points="${ampsPoints}" class="history-line history-line-amps" />
     <polyline points="${socPoints}" class="history-line history-line-soc" />
+    <circle cx="${lastSocX}" cy="${lastSocY}" r="2.4" class="history-dot history-dot-soc" />
+    <circle cx="${lastAmpsX}" cy="${lastAmpsY}" r="2.4" class="history-dot history-dot-amps" />
+    ${socLabels}
+    ${ampsLabels}
+    ${xLabels}
   `;
 
   const last = samples[samples.length - 1];
   nowSoc.textContent = `${last.soc}%`;
   nowAmps.textContent = `${last.actual_amps}A`;
+  if (nowOffered) nowOffered.textContent = `${last.offered_amps}A`;
 
   const spanMin = Math.max(0, (last.t - samples[0].t) / 60);
   windowLabel.textContent = spanMin < 1 ? "últimos segundos" : `últimos ${Math.round(spanMin)}min`;
@@ -591,7 +741,7 @@ function createCard(c) {
         </button>
         <button class="icon-btn" data-role="chaos-toggle" type="button" title="Ajustar chaos deste charger">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 1 6.6 6H2l3.6 3-1.4 5L8 11l3.8 3-1.4-5L14 6H9.4L8 1Z"/></svg>
-          <span class="chaos-active-dot" data-role="chaos-active-dot" hidden></span>
+          <span class="chaos-badge" data-role="chaos-badge" hidden></span>
         </button>
       </div>
     </div>
@@ -627,34 +777,38 @@ function createCard(c) {
     </div>
     <div class="history-panel" data-role="history-panel" hidden>
       <div class="history-chart-wrap">
-        <svg class="history-chart" viewBox="0 0 300 110" preserveAspectRatio="none" data-role="history-svg" aria-hidden="true"></svg>
+        <svg class="history-chart" viewBox="0 0 300 122" preserveAspectRatio="xMidYMid meet" data-role="history-svg" aria-hidden="true"></svg>
         <span class="history-empty" data-role="history-empty">ainda sem amostras suficientes — aguarde o próximo ciclo de MeterValues</span>
       </div>
       <div class="history-legend">
         <span class="legend-item legend-soc"><i></i>SoC <b data-role="history-soc-now">—</b></span>
         <span class="legend-item legend-amps"><i></i>Corrente <b data-role="history-amps-now">—</b></span>
+        <span class="legend-item legend-offered"><i></i>Limite <b data-role="history-offered-now">—</b></span>
         <span class="history-window" data-role="history-window"></span>
       </div>
     </div>
     <div class="chaos-panel" data-role="chaos-panel" hidden>
       <p class="chaos-hint">Aplica em tempo real, sem remover/readicionar. 0 desliga cada chaos individualmente.</p>
+      <p class="chaos-active-summary" data-role="chaos-active-summary"></p>
       <div class="chaos-grid">
-        <label>Desconexão a cada (s)
+        <label data-chaos-group="disconnect">Desconexão a cada (s)
           <input type="number" min="0" step="1" data-role="chaos-disconnect-interval">
         </label>
-        <label>± jitter (s)
+        <label data-chaos-group="disconnect">± jitter (s)
           <input type="number" min="0" step="1" data-role="chaos-disconnect-jitter">
         </label>
-        <label>Latência mín (ms)
+        <label data-chaos-group="latency">Latência mín (ms)
           <input type="number" min="0" step="1" data-role="chaos-latency-min">
         </label>
-        <label>Latência máx (ms)
+        <label data-chaos-group="latency">Latência máx (ms)
           <input type="number" min="0" step="1" data-role="chaos-latency-max">
         </label>
-        <label>Perda de msg (0–1)
+        <label data-chaos-group="drop">Perda de msg (0–1)
           <input type="number" min="0" max="1" step="0.05" data-role="chaos-drop-rate">
         </label>
-        <label>Teto fila offline
+      </div>
+      <div class="chaos-grid chaos-grid-secondary">
+        <label>Teto fila offline <span class="chaos-field-note">(config, não é chaos)</span>
           <input type="number" min="0" step="1" data-role="chaos-max-queue">
         </label>
       </div>
@@ -730,8 +884,7 @@ function updateCard(el, c) {
   // impossível digitar num campo enquanto o painel de chaos está aberto.
   const chaos = c.chaos || {};
   el._chaosSnapshot = chaos;
-  const chaosActive = Object.values(chaos).some((v) => v > 0);
-  el.querySelector('[data-role="chaos-active-dot"]').hidden = !chaosActive;
+  updateChaosIndicators(el, chaos);
 
   const led = el.querySelector('[data-role="led"]');
   led.className = `led ${status}`;
