@@ -39,6 +39,7 @@ from ocpp.v16.enums import (
     RemoteStartStopStatus,
     ReservationStatus,
     ResetType,
+    TriggerMessageStatus,
     UnlockStatus,
     UpdateStatus,
 )
@@ -715,19 +716,50 @@ class EVChargerSim(BaseChargePoint):
             )
 
         if is_hard:
-            # Hard reset: simula o carregador caindo (Unavailable) durante
-            # o boot do firmware antes de voltar a responder normalmente.
-            await self.send_status_notification(ChargePointStatus.unavailable)
             self.log.info("[RESET] hard reset — simulando reboot do firmware (5s)...")
-            await asyncio.sleep(5)
-            await self.send_boot_notification()
-            await asyncio.sleep(1)
+            if not await self._simulate_reboot(unavailable_seconds=5):
+                self.log.warning(
+                    "[RESET] conexão caiu durante o reboot simulado — a "
+                    "reconexão (run_reconnect_sequence) cuida do resto quando voltar."
+                )
+                return
         else:
             self.log.info("[RESET] soft reset — reinício rápido do software (1s)...")
             await asyncio.sleep(1)
 
         await self.send_status_notification(ChargePointStatus.available)
         self.log.info("[RESET] concluído — carregador disponível novamente")
+
+    async def _simulate_reboot(self, unavailable_seconds: float) -> bool:
+        """
+        Sequência de reboot simulado, compartilhada por hard reset e
+        firmware update: Unavailable pelo tempo dado, BootNotification
+        até o CSMS aceitar, e só então retorna — quem chama decide o
+        que vem depois (Available puro no reset, mais um
+        FirmwareStatusNotification(Installed) no firmware update).
+
+        Ao contrário de run_reconnect_sequence (queda de TRANSPORTE, que
+        não reenvia BootNotification — ver comentário lá), isto AQUI é
+        um reboot de verdade sendo simulado, então BootNotification é
+        exatamente a mensagem certa. E precisa ser com retry-até-Accepted
+        (_boot_until_accepted), não uma tentativa única: antes tanto o
+        hard reset quanto o firmware update chamavam send_boot_notification()
+        uma vez só e seguiam em frente pra Available mesmo se o CSMS
+        respondesse Pending/Rejected — o mesmo tipo de "o simulador
+        espera que algo aconteça, mas não confere se aconteceu de fato"
+        que motivou a revisão desta função.
+
+        Retorna False se a conexão caiu enquanto esperava o Accepted —
+        nesse caso quem chamou NÃO deve prosseguir pra Available/
+        Installed (run_reconnect_sequence assume o resto quando a
+        conexão voltar).
+        """
+        await self.send_status_notification(ChargePointStatus.unavailable)
+        await asyncio.sleep(unavailable_seconds)
+        if not await self._boot_until_accepted():
+            return False
+        await asyncio.sleep(1)
+        return True
 
     def _current_ocpp_status(self) -> ChargePointStatus:
         """
@@ -760,6 +792,19 @@ class EVChargerSim(BaseChargePoint):
         TriggerMessage pede para o carregador reenviar uma mensagem
         espontaneamente (ex: StatusNotification, Heartbeat). Usado pelo
         status_check() do CSMS real para forçar uma atualização de estado.
+
+        requestedMessage tem 6 valores válidos pela spec (MessageTrigger):
+        BootNotification, DiagnosticsStatusNotification,
+        FirmwareStatusNotification, Heartbeat, MeterValues,
+        StatusNotification. Antes só 3 eram tratados e os outros 3
+        caíam no mesmo "return Accepted" no fim da função — o CSMS pedia
+        uma mensagem, recebia Accepted (dizendo "ok, vou mandar"), e
+        nunca via nada chegar. Aqui: BootNotification passa a ser
+        tratado de verdade; os dois de Diagnostics/Firmware, que só
+        fazem sentido como parte de um fluxo já em andamento (não como
+        um estado consultável a qualquer momento), respondem
+        NotImplemented — a resposta honesta que a spec já prevê pra
+        isso, em vez de fingir "aceito" e não entregar nada.
         """
         self.log.info(f"[TRIGGER MESSAGE] requested={requested_message} connector={connector_id}")
         if requested_message == "StatusNotification":
@@ -781,7 +826,23 @@ class EVChargerSim(BaseChargePoint):
             asyncio.create_task(
                 self._call_or_queue(self._build_meter_values_request(), kind="MeterValues")
             )
-        return call_result.TriggerMessage(status="Accepted")
+        elif requested_message == "BootNotification":
+            # _boot_until_accepted (não send_boot_notification puro) —
+            # um CSMS que pede isso de propósito quer ver o registro
+            # confirmado, não uma única tentativa que pode voltar
+            # Pending/Rejected e morrer aí.
+            asyncio.create_task(self._boot_until_accepted())
+        elif requested_message in ("DiagnosticsStatusNotification", "FirmwareStatusNotification"):
+            self.log.info(
+                f"[TRIGGER MESSAGE] {requested_message} só existe como parte de um "
+                "GetDiagnostics/UpdateFirmware já em andamento — nada pra reenviar "
+                "agora, respondendo NotImplemented."
+            )
+            return call_result.TriggerMessage(status=TriggerMessageStatus.not_implemented)
+        else:
+            self.log.warning(f"[TRIGGER MESSAGE] requestedMessage desconhecido: {requested_message}")
+            return call_result.TriggerMessage(status=TriggerMessageStatus.not_implemented)
+        return call_result.TriggerMessage(status=TriggerMessageStatus.accepted)
 
     @on(Action.get_configuration)
     async def on_get_configuration(self, key=None, **kwargs):
@@ -950,11 +1011,16 @@ class EVChargerSim(BaseChargePoint):
                 self.log.info(f"[FIRMWARE] status: {status.value}")
                 await asyncio.sleep(delay)
 
-            # Reboot simulado, mesma sequência do hard reset.
-            await self.send_status_notification(ChargePointStatus.unavailable)
-            await asyncio.sleep(3)
-            await self.send_boot_notification()
-            await asyncio.sleep(1)
+            # Reboot simulado, mesma sequência do hard reset — via
+            # _simulate_reboot, que tenta até o CSMS aceitar o
+            # BootNotification em vez de uma tentativa única (ver
+            # docstring do helper).
+            if not await self._simulate_reboot(unavailable_seconds=3):
+                self.log.warning(
+                    "[FIRMWARE] conexão caiu durante o reboot simulado — a "
+                    "reconexão (run_reconnect_sequence) cuida do resto quando voltar."
+                )
+                return
             await self.send_status_notification(ChargePointStatus.available)
 
             await self._call_or_queue(
