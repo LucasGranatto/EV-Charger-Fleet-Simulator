@@ -30,10 +30,12 @@ from ocpp.v16.enums import (
     CancelReservationStatus,
     ChargePointErrorCode,
     ChargePointStatus,
+    ChargingRateUnitType,
     ClearCacheStatus,
     DataTransferStatus,
     DiagnosticsStatus,
     FirmwareStatus,
+    GetCompositeScheduleStatus,
     Reason,
     RegistrationStatus,
     RemoteStartStopStatus,
@@ -470,11 +472,28 @@ class EVChargerSim(BaseChargePoint):
         Extraído do handler de perfil original para ser reutilizável pelo
         agendador de múltiplos períodos (_run_charging_schedule) sem
         duplicar a lógica de suspensão.
+
+        Primeiro passa pelo teto físico do charger (hardware_max_amps,
+        anunciado ao CSMS como a chave "CurrentMax" — ver
+        on_get_configuration): um SetChargingProfile pedindo mais do que
+        a fiação/breaker simulados suportam é clampado aqui, igual a um
+        charger real, que fisicamente não consegue entregar mais do que
+        seu hardware permite, não importa o que o CSMS peça. Antes
+        QUALQUER valor vindo do CSMS era aplicado direto, sem teto
+        nenhum — algo que nenhum charger físico faz.
         """
         state = self.state
-        state.current_offered_amps = offered_amps
+        capped_amps = min(offered_amps, self.config.hardware_max_amps)
+        if capped_amps < offered_amps:
+            self.log.warning(
+                f"[{source}] CSMS pediu {offered_amps}A, acima do teto físico "
+                f"deste charger ({self.config.hardware_max_amps}A, chave "
+                f"CurrentMax) — aplicando {capped_amps}A."
+            )
+
+        state.current_offered_amps = capped_amps
         state.current_actual_amps = compute_actual_current(
-            offered_amps, state.battery_soc_percent
+            capped_amps, state.battery_soc_percent
         )
         self.log.info(
             f"[{source}] limite oferecido={state.current_offered_amps}A | "
@@ -542,6 +561,21 @@ class EVChargerSim(BaseChargePoint):
         periods = schedule["charging_schedule_period"]
         unit = schedule.get("charging_rate_unit", "A")
 
+        # Teto de memória do firmware simulado (anunciado ao CSMS como
+        # "ChargingScheduleMaxPeriods" — ver on_get_configuration): um
+        # charger real não tem espaço infinito pra guardar períodos de
+        # agenda. Antes QUALQUER quantidade de períodos era aceita e
+        # percorrida sem limite nenhum — o anúncio da chave sem aplicar
+        # de fato o teto seria a mesma alegação vazia que motivou essa
+        # revisão inteira.
+        if len(periods) > self.config.max_schedule_periods:
+            self.log.warning(
+                f"[PERFIL RECEBIDO] {len(periods)} período(s) recebido(s), mas "
+                f"este charger só guarda {self.config.max_schedule_periods} "
+                "(ChargingScheduleMaxPeriods) — os excedentes serão ignorados."
+            )
+            periods = periods[: self.config.max_schedule_periods]
+
         self._cancel_profile_task()
 
         if periods:
@@ -575,6 +609,62 @@ class EVChargerSim(BaseChargePoint):
             f"padrão ({fallback_amps:.0f}A)"
         )
         return call_result.ClearChargingProfile(status="Accepted")
+
+    @on(Action.get_composite_schedule)
+    async def on_get_composite_schedule(
+        self, connector_id, duration, charging_rate_unit=None, **kwargs
+    ):
+        """
+        Devolve o efeito líquido do(s) perfil(is) ativo(s) no conector.
+        É EXATAMENTE o comando que um operador usa pra checar na prática
+        se o charger faz Smart Charging de verdade, em vez de confiar só
+        no que SupportedFeatureProfiles anuncia (ver o aviso correspondente
+        em on_get_configuration) — um charger que anuncia o profile mas
+        não implementa este handler é a alegação vazia em pessoa: aceita
+        SetChargingProfile, devolve Accepted, e não tem como o CSMS nunca
+        confirmar se algo de fato está sendo aplicado. Handler não
+        existia até esta revisão.
+
+        Este simulador não empilha múltiplos perfis por
+        purpose/stackLevel — cada SetChargingProfile novo substitui o
+        anterior por completo (ver on_set_charging_profile/
+        _cancel_profile_task) — então a "composta" aqui é sempre só o
+        único perfil ativo no momento. Isso bate com o
+        ChargeProfileMaxStackLevel=1 já anunciado em GetConfiguration,
+        em vez de fingir uma composição de múltiplas camadas que este
+        charger não calcula de verdade.
+        """
+        state = self.state
+        if state.active_transaction_id is None:
+            # Sem sessão, sem perfil ativo — nada pra compor. Rejected é
+            # a resposta correta da spec quando não há schedule a reportar,
+            # não um Accepted vazio.
+            self.log.info(
+                f"[GET COMPOSITE SCHEDULE] connector={connector_id} — sem sessão "
+                "ativa, nada a compor (Rejected)."
+            )
+            return call_result.GetCompositeSchedule(status=GetCompositeScheduleStatus.rejected)
+
+        unit = charging_rate_unit or ChargingRateUnitType.amps
+        if unit == ChargingRateUnitType.watts:
+            limit = round(state.current_offered_amps * self.config.nominal_voltage, 1)
+        else:
+            limit = state.current_offered_amps
+
+        self.log.info(
+            f"[GET COMPOSITE SCHEDULE] connector={connector_id} | duration={duration}s | "
+            f"limite atual reportado={limit}{unit}"
+        )
+        return call_result.GetCompositeSchedule(
+            status=GetCompositeScheduleStatus.accepted,
+            connector_id=connector_id,
+            schedule_start=datetime.now(timezone.utc).isoformat(),
+            charging_schedule={
+                "duration": duration,
+                "charging_rate_unit": unit,
+                "charging_schedule_period": [{"start_period": 0, "limit": limit}],
+            },
+        )
 
     @on(Action.remote_start_transaction)
     async def on_remote_start_transaction(self, id_tag, connector_id=None, **kwargs):
@@ -874,6 +964,35 @@ class EVChargerSim(BaseChargePoint):
             {"key": "ReserveConnectorZeroSupported", "readonly": True, "value": "false"},
             {"key": "AvailabilityStatus", "readonly": True,
              "value": self.state.availability_status},
+            # Teto físico de corrente deste charger (fiação/breaker) —
+            # CurrentMax casa com o padrão genérico que muitos CSMS usam
+            # como fallback quando não reconhecem a chave específica do
+            # fabricante ("*current*max*"). Antes esta chave não existia
+            # de forma nenhuma, então um CSMS que depende dela pra saber
+            # o limite físico real (em vez de assumir um valor arbitrário)
+            # não tinha como descobrir. Ver hardware_max_amps em
+            # SimConfig — de fato APLICADO em _apply_offered_amps, não só
+            # anunciado aqui.
+            {"key": "CurrentMax", "readonly": True,
+             "value": str(self.config.hardware_max_amps)},
+            # As 4 chaves padrão OCPP 1.6 de capacidade do feature profile
+            # "SmartCharging" (Core Profile spec, tabela de Configuration
+            # Keys). SupportedFeatureProfiles já anunciava "SmartCharging"
+            # acima, mas sem estas 4 chaves um CSMS não tem como saber SE
+            # o charger de fato implementa perfis multi-período/stacking
+            # ou só aceita SetChargingProfile e ignora o resto — anunciar
+            # o profile sem elas é uma alegação vazia. Os valores aqui
+            # refletem HONESTAMENTE o que este simulador faz de verdade:
+            # só 1 perfil ativo por vez, sem stacking real (ver
+            # on_set_charging_profile/_cancel_profile_task — cada perfil
+            # novo substitui o anterior por completo, não empilha por
+            # purpose/stackLevel).
+            {"key": "ChargeProfileMaxStackLevel", "readonly": True, "value": "1"},
+            {"key": "ChargingScheduleAllowedChargingRateUnit", "readonly": True,
+             "value": "Current,Power"},
+            {"key": "ChargingScheduleMaxPeriods", "readonly": True,
+             "value": str(self.config.max_schedule_periods)},
+            {"key": "MaxChargingProfilesInstalled", "readonly": True, "value": "1"},
         ]
         if key:
             # CSMS pediu chaves específicas: filtra e reporta as desconhecidas
@@ -1245,15 +1364,13 @@ class EVChargerSim(BaseChargePoint):
             # SetChargingProfile chegar — um carregador físico começa a
             # entregar corrente assim que o contator fecha, não fica em
             # 0A esperando o CSMS reagir. O CSMS ainda pode sobrescrever
-            # isso a qualquer momento.
-            state.current_offered_amps = self.config.default_offered_amps
-            state.current_actual_amps = compute_actual_current(
-                state.current_offered_amps, state.battery_soc_percent
-            )
-            self.log.info(
-                f"[SESSION] Corrente inicial: {state.current_offered_amps:.0f}A oferecido "
-                f"/ {state.current_actual_amps:.1f}A real (aguardando SetChargingProfile do CSMS)"
-            )
+            # isso a qualquer momento. Via _apply_offered_amps (não
+            # atribuição direta) pra também passar pelo teto físico do
+            # charger — default_offered_amps configurado acima do
+            # hardware_max_amps deste charger é clampado igual a
+            # qualquer SetChargingProfile excessivo.
+            self._apply_offered_amps(self.config.default_offered_amps, source="SESSÃO INICIADA")
+            self.log.info("[SESSION] aguardando SetChargingProfile do CSMS...")
 
             await self.send_status_notification(ChargePointStatus.preparing)
             await asyncio.sleep(1)  # simula o delay real de fechamento do contator
@@ -1981,6 +2098,7 @@ class EVChargerSim(BaseChargePoint):
             "energy_wh": round(s.energy_meter_wh, 1),
             "offered_amps": round(s.current_offered_amps, 1),
             "actual_amps": round(s.current_actual_amps, 1),
+            "hardware_max_amps": self.config.hardware_max_amps,
             "availability_status": s.availability_status,
             "reservation_id": s.reservation_id,
             "queue_len": len(s.offline_queue),

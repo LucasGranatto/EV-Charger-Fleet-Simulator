@@ -37,6 +37,8 @@ CHARGER_OVERRIDE_FIELDS = frozenset({
     "battery_capacity_wh",
     "initial_soc_percent",
     "nominal_voltage",
+    "hardware_max_amps",
+    "max_schedule_periods",
     "call_timeout_seconds",
     "chaos_disconnect_interval_seconds",
     "chaos_disconnect_jitter_seconds",
@@ -69,6 +71,21 @@ class SimConfig:
     initial_soc_percent: float = 20.0
 
     nominal_voltage: float = 225.0
+
+    # ── Limites físicos do hardware — sem isso, o simulador deixava
+    # aplicar qualquer corrente que o CSMS pedisse via SetChargingProfile,
+    # coisa que nenhum charger real faz (a fiação/breaker/contator tem um
+    # teto físico, e isso normalmente é anunciado via GetConfiguration
+    # pra o CSMS não precisar adivinhar). hardware_max_amps é esse teto
+    # — reportado como a chave "CurrentMax" (ver on_get_configuration) e
+    # de fato APLICADO como um clamp em qualquer corrente oferecida (ver
+    # _apply_offered_amps), não só anunciado. max_schedule_periods é o
+    # equivalente pro lado "memória limitada de firmware": quantos
+    # períodos de um chargingSchedule este charger de fato guarda —
+    # reportado como "ChargingScheduleMaxPeriods" e truncado de verdade
+    # em on_set_charging_profile se o CSMS mandar mais que isso.
+    hardware_max_amps: float = 32.0
+    max_schedule_periods: int = 10
 
     # Timeout para chamadas críticas (Start/StopTransaction) — sem isso,
     # um CSMS que trava sem responder deixa o simulador pendurado pra
@@ -161,6 +178,8 @@ class SimConfig:
             "battery_capacity_wh": args.battery_wh,
             "initial_soc_percent": args.initial_soc,
             "nominal_voltage": args.voltage,
+            "hardware_max_amps": args.hardware_max_amps,
+            "max_schedule_periods": args.max_schedule_periods,
             "call_timeout_seconds": args.call_timeout,
             "chaos_disconnect_interval_seconds": args.chaos_disconnect_interval,
             "chaos_disconnect_jitter_seconds": args.chaos_disconnect_jitter,
@@ -214,6 +233,17 @@ def _parse_args(argv=None):
                          help="SoC inicial de cada sessão, em %% (padrão: 20.0).")
     parser.add_argument("--voltage", type=float, default=None,
                          help="Tensão nominal de referência em V (padrão: 225.0).")
+    parser.add_argument("--hardware-max-amps", type=float, default=None,
+                         help="Teto físico de corrente deste charger (fiação/breaker) — "
+                              "anunciado via GetConfiguration (chave CurrentMax) e "
+                              "de fato aplicado a qualquer corrente oferecida, mesmo "
+                              "que o CSMS peça mais via SetChargingProfile (padrão: 32.0).")
+    parser.add_argument("--max-schedule-periods", type=int, default=None,
+                         help="Quantos períodos de um chargingSchedule este charger "
+                              "de fato guarda (memória limitada de firmware) — "
+                              "anunciado via GetConfiguration (chave "
+                              "ChargingScheduleMaxPeriods) e usado pra truncar perfis "
+                              "maiores recebidos via SetChargingProfile (padrão: 10).")
     parser.add_argument("--call-timeout", type=float, default=None,
                          help="Timeout (s) para Start/StopTransaction (padrão: 30.0).")
     parser.add_argument("--chaos-disconnect-interval", type=float, default=None,
