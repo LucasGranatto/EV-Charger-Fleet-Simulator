@@ -104,6 +104,17 @@ class EVChargerSim(BaseChargePoint):
         self.is_online: bool = False
         self._local_tx_counter: int = 0
 
+        # True assim que o BootNotification INICIAL é aceito pelo CSMS
+        # — não reseta em quedas/reconexões seguintes (é por isso que
+        # não é ChargerState: sobrevive à sessão de transporte, só não
+        # sobrevive a uma instância nova de verdade). Usado por
+        # run_reconnect_sequence pra distinguir "queda depois de já
+        # registrado" (não reenvia BootNotification, só resincroniza)
+        # de "queda no meio das tentativas do boot inicial, antes de
+        # qualquer Accepted" (precisa continuar tentando o boot — ainda
+        # não existe registro nenhum do lado do CSMS pra resincronizar).
+        self._boot_confirmed: bool = False
+
         # Guarda "um início de sessão já está em andamento" — cobre a
         # janela entre aceitar um RemoteStart/start local e
         # active_transaction_id ser de fato gravado em
@@ -2155,6 +2166,7 @@ class EVChargerSim(BaseChargePoint):
         """
         if not await self._boot_until_accepted():
             return  # ficou offline no meio das tentativas; main() reconecta e chama de novo
+        self._boot_confirmed = True
         await asyncio.sleep(1)
         await self.send_status_notification(ChargePointStatus.available)
 
@@ -2176,16 +2188,42 @@ class EVChargerSim(BaseChargePoint):
 
     async def run_reconnect_sequence(self):
         """
-        Reconexão da mesma instância (com todo o estado acumulado):
-        reenvia BootNotification, esvazia a fila offline e informa o
-        status atual do conector — que pode não ser Available se uma
-        sessão continuou rodando durante a queda.
+        Reconexão da mesma instância (com todo o estado acumulado) após
+        uma queda de TRANSPORTE (WebSocket/rede) — NÃO reenvia
+        BootNotification, só esvazia a fila offline e informa o status
+        atual do conector, que pode não ser Available se uma sessão
+        continuou rodando durante a queda.
+
+        Antes esta função reenviava BootNotification em toda reconexão,
+        igual ao boot inicial. Na prática isso confunde CSMS que tratam
+        BootNotification como "este charge point acabou de (re)iniciar
+        fisicamente" e, como efeito colateral, esquecem qualquer
+        transação em andamento associada a esse charge_point_id — mesmo
+        sem nenhum StopTransaction ter sido enviado. Pela spec OCPP 1.6,
+        BootNotification comunica o BOOT do dispositivo (reset físico,
+        perda de estado); uma queda de WebSocket é só um blip de
+        transporte — a transação, se houver, é a mesma de antes, e o
+        CSMS deve correlacioná-la pelo transaction_id (que ele mesmo
+        atribuiu em StartTransaction.conf), não pela conexão TCP em si.
+        BootNotification continua sendo enviado uma única vez, no boot
+        de verdade do processo — ver run_first_boot_sequence.
         """
+        if not self._boot_confirmed:
+            # A conexão caiu no meio das tentativas do boot INICIAL,
+            # antes de qualquer Accepted (ver _boot_until_accepted) —
+            # main() já trata isso como "reconexão" (cp não é mais None
+            # depois da 1ª tentativa), mas do lado do CSMS ainda não
+            # existe registro nenhum pra resincronizar. Precisa
+            # continuar tentando o boot, não pular direto pro resync
+            # abaixo.
+            await self.run_first_boot_sequence()
+            return
+
         self.log.info(
-            "[RECONEXÃO] reenviando BootNotification e esvaziando fila offline..."
+            "[RECONEXÃO] esvaziando fila offline e resincronizando status "
+            "(sem reenviar BootNotification — a transação, se houver, "
+            "continua a mesma de antes da queda)..."
         )
-        if not await self._boot_until_accepted():
-            return  # caiu de novo durante as tentativas; main() chama de novo ao reconectar
         await self._flush_offline_queue()
 
         state = self.state
