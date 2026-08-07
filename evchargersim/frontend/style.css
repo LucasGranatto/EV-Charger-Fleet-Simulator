@@ -10,7 +10,8 @@
    ─────────────────────────────────────────────────────────────── */
 :root {
   --bg: #0a0d13;
-  --bg-grid-line: rgba(45, 216, 196, 0.045);
+  --bg-grid-minor: rgba(45, 216, 196, 0.022);
+  --bg-grid-major: rgba(45, 216, 196, 0.045);
   --surface: #0f141d;
   --surface-raised: #151b26;
   --surface-hover: #1a2230;
@@ -45,10 +46,23 @@
 
 body {
   margin: 0;
+  /* Grade em dois níveis, tipo papel de projeto (blueprint): linhas
+     "minor" bem finas a cada 17px marcam a textura sem competir com o
+     conteúdo, e linhas "major" um pouco mais visíveis a cada 68px (4×)
+     dão uma referência de escala mais grossa — no lugar da grade única
+     e uniforme de antes, que em qualquer opacidade sempre parecia "uma
+     grade" chapada em vez de um plano de fundo texturizado. A vinheta
+     radial no topo-esquerda mantém o brilho perto do header; a segunda,
+     mais ampla, escurece sutilmente os cantos pra puxar o olho pro
+     conteúdo central em vez do fundo.
+  */
   background:
-    linear-gradient(var(--bg-grid-line) 1px, transparent 1px) 0 0 / 100% 34px,
-    linear-gradient(90deg, var(--bg-grid-line) 1px, transparent 1px) 0 0 / 34px 100%,
-    radial-gradient(ellipse 1100px 480px at 12% -12%, rgba(45, 216, 196, 0.05), transparent),
+    linear-gradient(var(--bg-grid-major) 1px, transparent 1px) 0 0 / 100% 68px,
+    linear-gradient(90deg, var(--bg-grid-major) 1px, transparent 1px) 0 0 / 68px 100%,
+    linear-gradient(var(--bg-grid-minor) 1px, transparent 1px) 0 0 / 100% 17px,
+    linear-gradient(90deg, var(--bg-grid-minor) 1px, transparent 1px) 0 0 / 17px 100%,
+    radial-gradient(ellipse 1100px 480px at 12% -12%, rgba(45, 216, 196, 0.04), transparent 60%),
+    radial-gradient(ellipse 1400px 900px at 50% 8%, transparent 45%, rgba(0, 0, 0, 0.22) 100%),
     var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
@@ -74,24 +88,54 @@ svg { fill: currentColor; }
   align-items: center;
   flex-wrap: wrap;
   gap: 18px;
-  margin-bottom: 24px;
-  padding-bottom: 18px;
-  border-bottom: 1px solid var(--border-soft);
+  margin-bottom: 22px;
+  padding: 16px 22px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  box-shadow: 0 14px 30px -20px rgba(0, 0, 0, 0.65);
+  position: relative;
+  overflow: hidden;
+}
+/* Trilho de destaque no topo — mesma ideia de "energizado" que os
+   status charging/faulted usam nas cards, aplicada ao chrome do app. */
+.topbar::before {
+  content: "";
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: 2px;
+  background: linear-gradient(90deg, var(--teal) 0%, transparent 65%);
+  opacity: 0.55;
 }
 
-.brand { display: flex; align-items: center; gap: 12px; }
+.brand { display: flex; align-items: center; gap: 13px; }
+
+/* Emblema da marca — antes o raio ficava "flutuando" solto ao lado do
+   texto; o badge dá a ele uma moldura própria, como um selo/ícone de
+   sistema em vez de um enfeite. */
+.brand-mark-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border-radius: 9px;
+  background: linear-gradient(155deg, var(--teal-dim), transparent 75%);
+  border: 1px solid var(--teal-dim);
+  flex-shrink: 0;
+}
 
 .brand-mark {
-  width: 26px;
-  height: 26px;
+  width: 19px;
+  height: 19px;
   color: var(--teal);
-  filter: drop-shadow(0 0 7px var(--teal-glow));
+  filter: drop-shadow(0 0 6px var(--teal-glow));
   flex-shrink: 0;
 }
 
 .brand-text h1 {
   margin: 0;
-  font-size: 17px;
+  font-size: 18px;
   font-weight: 700;
   letter-spacing: 0.01em;
   color: var(--text);
@@ -112,16 +156,37 @@ svg { fill: currentColor; }
 }
 
 .brand-sub {
-  margin: 2px 0 0;
+  margin: 3px 0 0;
+  display: flex;
+  align-items: center;
+  gap: 6px;
   font-size: 12px;
   color: var(--text-faint);
   letter-spacing: 0.01em;
 }
 
+/* Selo mono, tipo etiqueta de especificação técnica — reforça a
+   identidade "ferramenta de protocolo" sem depender só do texto corrido. */
+.brand-sub-tag {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-dim);
+  letter-spacing: 0.06em;
+}
+.brand-sub-sep { color: var(--border); }
+
 .topbar-right {
   display: flex;
   align-items: center;
   gap: 16px;
+}
+
+.topbar-divider {
+  width: 1px;
+  height: 22px;
+  background: var(--border);
+  flex-shrink: 0;
 }
 
 /* Indicador de conexão do stream de eventos (/api/events) */
@@ -149,6 +214,51 @@ svg { fill: currentColor; }
   animation: none;
 }
 .link-status-label { text-transform: uppercase; }
+
+/* ── Abas de nível superior (Frota / Histórico) ──────────────────── */
+.view-tabs {
+  display: flex;
+  gap: 4px;
+  width: fit-content;
+  margin-bottom: 20px;
+  padding: 4px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+
+.view-tab {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 14px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-faint);
+  font-family: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background-color 0.15s, color 0.15s;
+}
+.view-tab svg { width: 14px; height: 14px; flex-shrink: 0; }
+.view-tab:hover:not(.active) { color: var(--text-dim); background: var(--surface-raised); }
+.view-tab.active { background: var(--teal-dim); color: var(--teal); }
+
+.view-tab-hint {
+  font-size: 9.5px;
+  font-weight: 400;
+  font-style: italic;
+  color: var(--text-faint);
+  margin-left: 1px;
+}
+.view-tab.active .view-tab-hint { color: rgba(45, 216, 196, 0.65); }
+
+/* Mesma classe de bug do .history-empty/.advanced-add-row (ver
+   comentários mais abaixo) — só o atributo `hidden` do JS decide
+   qual aba está visível. */
+.view-panel[hidden] { display: none; }
 
 .icon-btn {
   display: inline-flex;
@@ -620,18 +730,74 @@ svg { fill: currentColor; }
 }
 
 /* ── Painel expansível de histórico (SoC/corrente ao longo do tempo) ── */
-.history-panel {
-  margin: -4px 0 14px;
-  padding: 10px 10px 8px;
-  background: var(--surface-raised);
-  border: 1px solid var(--border-soft);
-  border-radius: var(--radius-sm);
+/* ── Aba "Histórico" — gráfico ampliado ───────────────────────────
+   O SVG e as classes .history-* logo abaixo (grid/linhas/pontos/
+   rótulos) são os MESMOS de quando o gráfico vivia dentro do card —
+   só o container mudou de tamanho. Como o viewBox é um sistema de
+   coordenadas abstrato, aumentar a altura do wrap escala tudo
+   (grade, texto, linhas) proporcionalmente, sem precisar de nenhuma
+   folha de estilo "modo grande" separada. */
+.history-view-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 18px;
 }
 
-.history-chart-wrap {
-  position: relative;
-  height: 104px;
+.history-view-select {
+  display: flex;
+  align-items: center;
+  gap: 10px;
 }
+.history-view-select label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+#history-charger-select {
+  width: 240px;
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.history-view-nav { display: flex; gap: 6px; }
+
+.history-view-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 26px 20px;
+}
+
+.history-view-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-bottom: 20px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.history-view-head .cp-id { font-size: 17px; }
+
+.history-view-chart-wrap {
+  position: relative;
+  height: 440px;
+}
+/* O aviso de "sem amostras" fica maior aqui pra combinar com a escala
+   do resto — o mesmo texto de 11.5px do card ficaria perdido num
+   painel deste tamanho. */
+.history-view-chart-wrap .history-empty { font-size: 14px; padding: 0 40px; }
+
+.history-view-legend {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  font-size: 13.5px;
+  gap: 22px;
+}
+.history-view-legend .legend-item i { width: 11px; height: 11px; }
 
 .history-chart { width: 100%; height: 100%; overflow: visible; }
 
@@ -887,9 +1053,14 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 /* ── Responsivo ────────────────────────────────────────────────── */
 @media (max-width: 640px) {
-  body { padding: 20px 16px 48px; background-size: 100% 24px, 24px 100%, auto, auto; }
+  body { padding: 20px 16px 48px; background-size: 100% 48px, 48px 100%, 100% 12px, 12px 100%, auto, auto, auto; }
   .topbar { flex-direction: column; align-items: flex-start; }
   .topbar-right { width: 100%; justify-content: space-between; }
+  .view-tabs { width: 100%; }
+  .view-tab { flex: 1; justify-content: center; }
+  .history-view-toolbar { flex-direction: column; align-items: stretch; }
+  .history-view-select { flex-wrap: wrap; }
+  #history-charger-select { flex: 1; min-width: 0; }
   .toolbar { flex-direction: column; align-items: stretch; }
   .search-sort-row { flex-direction: column; align-items: stretch; }
   #new-charger-id, #search-input, #bulk-id-tag, #sort-select,

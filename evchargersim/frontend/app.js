@@ -535,26 +535,23 @@ async function applyChaos(chargeId, cardEl) {
   }
 }
 
-// ── Gráfico expansível de histórico (SoC/corrente) por card ─────────
+// ── Aba "Histórico" — gráfico ampliado de UM charger por vez ────────
 //
-// Cada card tem seu próprio botão de toggle (📈) que abre um painel
-// com um gráfico de linha simples (sem dependência externa — 2
-// <polyline> num <svg> só). Ao contrário do resto do painel, isso NÃO
-// vem pelo /api/events: só é buscado sob demanda enquanto o painel
-// está aberto, via poll (não dá pra empurrar por SSE algo que só
-// interessa quando o usuário está de fato olhando aquele card
-// específico, e incluir o histórico de todo mundo em CADA snapshot do
-// SSE inflaria o payload à toa).
-const historyPollers = new Map(); // charge_point_id -> intervalId
+// Antes o gráfico vivia dentro de cada card, pequeno demais pra tirar
+// leitura fina dos dados. Agora é uma aba própria: o botão 📈 de cada
+// card só navega pra cá e pré-seleciona aquele charger — o SVG e a
+// lógica de renderização (renderHistoryChart) são os MESMOS de antes,
+// só que reaproveitados dentro de um container bem maior (o viewBox é
+// só um sistema de coordenadas abstrato; escalar o container escala
+// tudo — grade, texto, linhas — proporcionalmente, sem precisar de
+// nenhuma lógica de "modo grande" separada).
+//
+// Como só existe UM gráfico visível por vez (o da aba, não mais um por
+// card), só precisa de UM poller ativo — bem mais simples que o Map
+// de intervalos por charger de antes.
 const HISTORY_POLL_MS = 4000;
-
-function stopHistoryPolling(chargeId) {
-  const intervalId = historyPollers.get(chargeId);
-  if (intervalId) {
-    clearInterval(intervalId);
-    historyPollers.delete(chargeId);
-  }
-}
+let historyViewChargeId = null;
+let historyViewPollId = null;
 
 async function fetchAndRenderHistory(chargeId, panel) {
   try {
@@ -567,13 +564,111 @@ async function fetchAndRenderHistory(chargeId, panel) {
   }
 }
 
-function toggleHistoryPanel(chargeId, panel) {
-  const opening = panel.hidden;
-  panel.hidden = !opening;
-  stopHistoryPolling(chargeId); // idempotente — evita 2 timers se o usuário clicar rápido
-  if (opening) {
-    fetchAndRenderHistory(chargeId, panel);
-    historyPollers.set(chargeId, setInterval(() => fetchAndRenderHistory(chargeId, panel), HISTORY_POLL_MS));
+function stopHistoryViewPolling() {
+  if (historyViewPollId) {
+    clearInterval(historyViewPollId);
+    historyViewPollId = null;
+  }
+}
+
+function startHistoryViewPolling() {
+  stopHistoryViewPolling();
+  if (!historyViewChargeId) return;
+  const panel = document.getElementById("history-view-card");
+  fetchAndRenderHistory(historyViewChargeId, panel);
+  historyViewPollId = setInterval(() => fetchAndRenderHistory(historyViewChargeId, panel), HISTORY_POLL_MS);
+}
+
+// Reconstrói as opções do <select> só quando o CONJUNTO de IDs muda —
+// preservando a seleção atual sempre que possível, pra não expulsar o
+// usuário do charger que ele estava olhando a cada snapshot do SSE.
+function populateHistoryChargerSelect(chargers) {
+  const select = document.getElementById("history-charger-select");
+  const ids = chargers.map((c) => c.charge_point_id).sort();
+  const currentOptionIds = Array.from(select.options).map((o) => o.value);
+  const changed = ids.length !== currentOptionIds.length || ids.some((id, i) => id !== currentOptionIds[i]);
+
+  if (changed) {
+    const previousSelection = historyViewChargeId;
+    select.innerHTML = ids.map((id) => `<option value="${escapeAttr(id)}">${escapeHtml(id)}</option>`).join("");
+    if (previousSelection && ids.includes(previousSelection)) {
+      select.value = previousSelection;
+    } else if (ids.length > 0) {
+      historyViewChargeId = ids[0];
+      select.value = ids[0];
+    } else {
+      historyViewChargeId = null;
+    }
+  }
+
+  const noChargers = document.getElementById("history-view-no-chargers");
+  const card = document.getElementById("history-view-card");
+  const nav = document.querySelector(".history-view-toolbar");
+  const hasChargers = ids.length > 0;
+  noChargers.hidden = hasChargers;
+  card.hidden = !hasChargers;
+  nav.hidden = !hasChargers;
+}
+
+// Cabeçalho da aba (LED/pill/ID) reflete o snapshot mais recente do
+// charger selecionado — isso SIM vem de graça pelo SSE (é o mesmo
+// c.status/c.online de sempre), só os pontos do gráfico em si é que
+// dependem do poll acima.
+function updateHistoryViewHeader() {
+  const c = lastChargers.find((x) => x.charge_point_id === historyViewChargeId);
+  const led = document.getElementById("history-view-led");
+  const pill = document.getElementById("history-view-pill");
+  const idEl = document.getElementById("history-view-id");
+  if (!c) {
+    led.className = "led";
+    pill.className = "pill";
+    pill.textContent = "";
+    idEl.textContent = "—";
+    return;
+  }
+  const status = displayStatus(c);
+  led.className = `led ${status}`;
+  pill.className = `pill ${status}`;
+  pill.textContent = c.online ? (STATUS_LABEL[c.status] || c.status) : "Offline";
+  idEl.textContent = c.charge_point_id;
+}
+
+function selectHistoryCharger(chargeId) {
+  historyViewChargeId = chargeId;
+  document.getElementById("history-charger-select").value = chargeId;
+  updateHistoryViewHeader();
+  if (activeView === "history") startHistoryViewPolling();
+}
+
+// Chamado pelo botão 📈 de um card específico — garante que o charger
+// exista nas opções (populateHistoryChargerSelect já rodou em todo
+// syncGrid) antes de selecioná-lo e trocar de aba.
+function openHistoryView(chargeId) {
+  historyViewChargeId = chargeId;
+  setActiveView("history");
+}
+
+// ── Abas de nível superior (Frota / Histórico) ───────────────────────
+let activeView = "fleet";
+
+function setActiveView(view) {
+  activeView = view;
+  document.querySelectorAll(".view-tab").forEach((btn) => {
+    const active = btn.dataset.view === view;
+    btn.classList.toggle("active", active);
+    btn.setAttribute("aria-selected", active ? "true" : "false");
+  });
+  document.querySelectorAll(".view-panel").forEach((panel) => {
+    panel.hidden = panel.dataset.viewPanel !== view;
+  });
+
+  if (view === "history") {
+    populateHistoryChargerSelect(lastChargers);
+    document.getElementById("history-charger-select").value = historyViewChargeId || "";
+    updateHistoryViewHeader();
+    startHistoryViewPolling();
+  } else {
+    stopHistoryViewPolling();
   }
 }
 
@@ -736,7 +831,7 @@ function createCard(c) {
       </div>
       <div class="card-top-right">
         <span class="pill" data-role="pill"></span>
-        <button class="icon-btn" data-role="history-toggle" type="button" title="Ver histórico de SoC/corrente">
+        <button class="icon-btn" data-role="history-toggle" type="button" title="Ver histórico ampliado (aba Histórico)">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.5V2.5h1v10h11.5v1H2ZM4 11l2.8-4 2.4 2.8L13.5 3l.8.6-5.3 6.9-2.4-2.8L4.8 11.7 4 11Z"/></svg>
         </button>
         <button class="icon-btn" data-role="chaos-toggle" type="button" title="Ajustar chaos deste charger">
@@ -773,18 +868,6 @@ function createCard(c) {
       <div class="telemetry-item">
         <span class="telemetry-label">Fila offline</span>
         <span class="telemetry-value" data-role="queue"></span>
-      </div>
-    </div>
-    <div class="history-panel" data-role="history-panel" hidden>
-      <div class="history-chart-wrap">
-        <svg class="history-chart" viewBox="0 0 300 122" preserveAspectRatio="xMidYMid meet" data-role="history-svg" aria-hidden="true"></svg>
-        <span class="history-empty" data-role="history-empty">ainda sem amostras suficientes — aguarde o próximo ciclo de MeterValues</span>
-      </div>
-      <div class="history-legend">
-        <span class="legend-item legend-soc"><i></i>SoC <b data-role="history-soc-now">—</b></span>
-        <span class="legend-item legend-amps"><i></i>Corrente <b data-role="history-amps-now">—</b></span>
-        <span class="legend-item legend-offered"><i></i>Limite <b data-role="history-offered-now">—</b></span>
-        <span class="history-window" data-role="history-window"></span>
       </div>
     </div>
     <div class="chaos-panel" data-role="chaos-panel" hidden>
@@ -862,7 +945,7 @@ function createCard(c) {
     removeCharger(chargeId));
 
   el.querySelector('[data-role="history-toggle"]').addEventListener("click", () =>
-    toggleHistoryPanel(chargeId, el.querySelector('[data-role="history-panel"]')));
+    openHistoryView(chargeId));
 
   el.querySelector('[data-role="chaos-toggle"]').addEventListener("click", () =>
     toggleChaosPanel(el));
@@ -972,6 +1055,17 @@ function syncGrid(chargers) {
   lastChargers = chargers;
   updateStatsStrip(chargers);
 
+  // Mantém a aba Histórico sincronizada mesmo quando ela não está
+  // ativa no momento (troca de aba não deve mostrar dado velho) — só
+  // reinicia o poll se o charger selecionado de fato mudou (ex: foi
+  // removido e outro assumiu o lugar), não a cada snapshot.
+  const chargerBeforeSync = historyViewChargeId;
+  populateHistoryChargerSelect(chargers);
+  if (activeView === "history") {
+    updateHistoryViewHeader();
+    if (historyViewChargeId !== chargerBeforeSync) startHistoryViewPolling();
+  }
+
   const grid = document.getElementById("grid");
   if (chargers.length === 0) {
     renderEmptyState(false);
@@ -1007,7 +1101,6 @@ function syncGrid(chargers) {
     if (!seen.has(id)) {
       el.remove();
       cardElements.delete(id);
-      stopHistoryPolling(id);
     }
   }
 
@@ -1099,6 +1192,29 @@ document.getElementById("sort-select").addEventListener("change", (e) => {
 });
 document.getElementById("token-btn").addEventListener("click", promptForToken);
 document.getElementById("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
+
+document.querySelectorAll(".view-tab").forEach((btn) => {
+  btn.addEventListener("click", () => setActiveView(btn.dataset.view));
+});
+document.getElementById("history-charger-select").addEventListener("change", (e) => {
+  selectHistoryCharger(e.target.value);
+});
+document.getElementById("history-prev-btn").addEventListener("click", () => {
+  const select = document.getElementById("history-charger-select");
+  const options = Array.from(select.options);
+  if (options.length === 0) return;
+  const i = options.findIndex((o) => o.value === historyViewChargeId);
+  const next = options[(i - 1 + options.length) % options.length];
+  selectHistoryCharger(next.value);
+});
+document.getElementById("history-next-btn").addEventListener("click", () => {
+  const select = document.getElementById("history-charger-select");
+  const options = Array.from(select.options);
+  if (options.length === 0) return;
+  const i = options.findIndex((o) => o.value === historyViewChargeId);
+  const next = options[(i + 1) % options.length];
+  selectHistoryCharger(next.value);
+});
 
 const bulkStartBtn = document.querySelector('[data-role="bulk-start"]');
 const bulkStopBtn = document.querySelector('[data-role="bulk-stop"]');

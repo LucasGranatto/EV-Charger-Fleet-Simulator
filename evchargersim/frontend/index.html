@@ -12,17 +12,24 @@
 <body>
   <header class="topbar">
     <div class="brand">
-      <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
-        <path d="M13 2 L5 18 H13 L11 30 L27 12 H17 L19 2 Z" />
-      </svg>
+      <span class="brand-mark-wrap">
+        <svg class="brand-mark" viewBox="0 0 32 32" aria-hidden="true">
+          <path d="M13 2 L5 18 H13 L11 30 L27 12 H17 L19 2 Z" />
+        </svg>
+      </span>
       <div class="brand-text">
         <h1>EVChargerSim<span class="brand-version">v3</span></h1>
-        <p class="brand-sub">Painel de controle · OCPP 1.6J</p>
+        <p class="brand-sub">
+          <span class="brand-sub-tag">OCPP 1.6J</span>
+          <span class="brand-sub-sep">·</span>
+          Painel de controle de frota
+        </p>
       </div>
     </div>
 
     <div class="topbar-right">
       <div class="stats-strip" id="stats-strip"><!-- preenchido por app.js --></div>
+      <div class="topbar-divider" aria-hidden="true"></div>
       <div class="link-status">
         <span class="sse-dot" id="sse-dot"></span>
         <span class="link-status-label" id="link-status-label">conectando</span>
@@ -33,7 +40,20 @@
     </div>
   </header>
 
+  <nav class="view-tabs" role="tablist" aria-label="Seções do painel">
+    <button class="view-tab active" type="button" data-view="fleet" role="tab" aria-selected="true">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v5H2V3Zm7 0h5v5H9V3ZM2 10h5v3H2v-3Zm7 0h5v3H9v-3Z"/></svg>
+      Frota
+    </button>
+    <button class="view-tab" type="button" data-view="history" role="tab" aria-selected="false">
+      <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 13.5V2.5h1v10h11.5v1H2ZM4 11l2.8-4 2.4 2.8L13.5 3l.8.6-5.3 6.9-2.4-2.8L4.8 11.7 4 11Z"/></svg>
+      Histórico
+      <span class="view-tab-hint">gráficos ampliados</span>
+    </button>
+  </nav>
+
   <main>
+    <section class="view-panel" data-view-panel="fleet">
     <div class="toolbar">
       <div class="toolbar-group toolbar-add">
         <label class="toolbar-label" for="new-charger-id">Adicionar</label>
@@ -94,6 +114,47 @@
     </details>
 
     <div id="grid"></div>
+    </section>
+
+    <section class="view-panel" data-view-panel="history" hidden>
+      <div class="history-view-toolbar">
+        <div class="history-view-select">
+          <label for="history-charger-select">Charger</label>
+          <select id="history-charger-select"></select>
+        </div>
+        <div class="history-view-nav">
+          <button id="history-prev-btn" class="icon-btn" type="button" title="Charger anterior">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>
+          </button>
+          <button id="history-next-btn" class="icon-btn" type="button" title="Próximo charger">
+            <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M6 3l5 5-5 5"/></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="history-view-card" id="history-view-card">
+        <div class="history-view-head">
+          <span class="led" id="history-view-led"></span>
+          <span class="cp-id" id="history-view-id">—</span>
+          <span class="pill" id="history-view-pill"></span>
+        </div>
+        <div class="history-view-chart-wrap">
+          <svg class="history-chart" viewBox="0 0 300 122" preserveAspectRatio="xMidYMid meet" data-role="history-svg" aria-hidden="true"></svg>
+          <span class="history-empty" data-role="history-empty">ainda sem amostras suficientes — aguarde o próximo ciclo de MeterValues</span>
+        </div>
+        <div class="history-legend history-view-legend">
+          <span class="legend-item legend-soc"><i></i>SoC <b data-role="history-soc-now">—</b></span>
+          <span class="legend-item legend-amps"><i></i>Corrente <b data-role="history-amps-now">—</b></span>
+          <span class="legend-item legend-offered"><i></i>Limite <b data-role="history-offered-now">—</b></span>
+          <span class="history-window" data-role="history-window"></span>
+        </div>
+      </div>
+
+      <div class="empty" id="history-view-no-chargers" hidden>
+        <strong>Nenhum charger disponível.</strong>
+        <span>Adicione um charger na aba "Frota" para ver o histórico dele aqui.</span>
+      </div>
+    </section>
   </main>
 
   <div class="modal-overlay" id="confirm-overlay" hidden>
