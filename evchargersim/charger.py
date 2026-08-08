@@ -30,6 +30,7 @@ from ocpp.v16.enums import (
     CancelReservationStatus,
     ChargePointErrorCode,
     ChargePointStatus,
+    ChargingProfilePurposeType,
     ChargingRateUnitType,
     ClearCacheStatus,
     DataTransferStatus,
@@ -95,10 +96,26 @@ class EVChargerSim(BaseChargePoint):
         )
         self.use_color = sys.stdout.isatty()
 
-        # Task de agendamento do perfil de carga ativo (ver
-        # _run_charging_schedule) — instância, não ChargerState, porque é
-        # uma asyncio.Task, não dado serializável.
+        # Task de agendamento do perfil "de fundo" ativo — purpose
+        # ChargePointMaxProfile ou TxDefaultProfile, sem stacking real,
+        # sempre só 1 de cada vez (comportamento original, ver
+        # _run_charging_schedule). TxProfile é tratado à parte, logo
+        # abaixo, porque ESSE sim empilha de verdade.
         self._profile_task: asyncio.Task | None = None
+
+        # TxProfiles ativos, indexados por stack_level — até
+        # config.max_tx_profiles simultâneos (ver on_set_charging_profile).
+        # Cada entrada: {"profile_id", "stack_level", "periods", "unit",
+        # "current_amps", "expired", "task"}. current_amps/expired são
+        # atualizados por _run_tx_profile_schedule a cada degrau; o
+        # efetivo a qualquer instante é decidido por
+        # _recompute_tx_profile_effective_amps (maior stack_level entre
+        # os ainda não expirados vence — semântica real da spec, não só
+        # "o último que chegou"). Escopado à transação: limpo em
+        # _send_start_transaction (sessão nova) e _send_stop_transaction
+        # (sessão encerrada) — TxProfile não sobrevive à transação pra
+        # qual foi definido.
+        self._tx_profiles: dict[int, dict] = {}
 
         # Plumbing de conectividade — também instância, não ChargerState
         # (são detalhes de transporte, não "dados simulados"). main()
@@ -196,6 +213,19 @@ class EVChargerSim(BaseChargePoint):
         if self._profile_task is not None and not self._profile_task.done():
             self._profile_task.cancel()
         self._profile_task = None
+
+    def _cancel_tx_profiles(self, stack_level: int | None = None):
+        """
+        Cancela e remove TxProfile(s) instalados — um stack_level
+        específico, ou TODOS se omitido (usado no início/fim de sessão,
+        já que TxProfile não sobrevive à transação pra qual foi
+        definido — ver comentário em __init__).
+        """
+        levels = [stack_level] if stack_level is not None else list(self._tx_profiles.keys())
+        for level in levels:
+            profile = self._tx_profiles.pop(level, None)
+            if profile is not None and profile["task"] is not None and not profile["task"].done():
+                profile["task"].cancel()
 
     def _enqueue_offline(self, kind: str, request, local_tx_id: int | None = None):
         """
@@ -550,13 +580,99 @@ class EVChargerSim(BaseChargePoint):
             # agendamento antes que ele termine sozinho — não é um erro.
             pass
 
+    async def _run_tx_profile_schedule(self, stack_level: int):
+        """
+        Percorre os períodos de UM TxProfile específico (por
+        stack_level) — mesma ideia de _run_charging_schedule, mas NÃO
+        aplica a corrente diretamente: grava o valor do degrau atual no
+        próprio dict do perfil (profile["current_amps"]) e delega a
+        decisão de qual perfil está de fato em efeito pra
+        _recompute_tx_profile_effective_amps, já que pode haver até
+        config.max_tx_profiles destes rodando ao mesmo tempo, cada um
+        no seu próprio stack_level.
+        """
+        profile = self._tx_profiles.get(stack_level)
+        if profile is None:
+            return
+        ordered = profile["periods"]
+        try:
+            for i, period in enumerate(ordered):
+                profile["current_amps"] = self._limit_to_amps(period["limit"], profile["unit"])
+                self._recompute_tx_profile_effective_amps()
+
+                if i + 1 < len(ordered):
+                    start_period = period.get("start_period", 0)
+                    next_start = ordered[i + 1].get("start_period", 0)
+                    wait = max(0, next_start - start_period)
+                    if wait > 0:
+                        self.log.info(
+                            f"[TxProfile stack={stack_level}] degrau atual válido por "
+                            f"{wait}s antes do próximo"
+                        )
+                        await asyncio.sleep(wait)
+
+            # Chegou ao fim dos próprios degraus — deixa de contar como
+            # "em efeito" (spec não define o que acontece depois do
+            # último período de um TxProfile Absolute/Relative; aqui ele
+            # simplesmente sai de cena e cede lugar ao próximo stack_level
+            # mais alto ainda ativo, ou à corrente padrão da sessão).
+            profile["expired"] = True
+            self._recompute_tx_profile_effective_amps()
+        except asyncio.CancelledError:
+            # Substituído por um novo TxProfile no mesmo stack_level,
+            # removido por ClearChargingProfile, ou fim de sessão.
+            pass
+
+    def _recompute_tx_profile_effective_amps(self):
+        """
+        Reavalia, entre os TxProfiles atualmente instalados (até
+        config.max_tx_profiles, um por stack_level), qual está de fato
+        em efeito agora: o de MAIOR stack_level que ainda não chegou ao
+        fim dos próprios degraus — "Higher values [stackLevel] have
+        precedence over lower values", conforme a spec. Sem nenhum
+        TxProfile em efeito, cede lugar a um perfil "de fundo"
+        (ChargePointMaxProfile/TxDefaultProfile, se algum estiver
+        rodando via _profile_task — não pisamos nele aqui) ou volta à
+        corrente padrão da sessão.
+        """
+        for stack_level in sorted(self._tx_profiles.keys(), reverse=True):
+            profile = self._tx_profiles[stack_level]
+            if not profile["expired"] and profile["current_amps"] is not None:
+                self._apply_offered_amps(
+                    profile["current_amps"], source=f"TxProfile(stack={stack_level})"
+                )
+                return
+
+        if self._profile_task is not None and not self._profile_task.done():
+            # Perfil "de fundo" já está rodando e aplicando a própria
+            # corrente sozinho — não sobrescrever com o fallback abaixo.
+            return
+
+        fallback_amps = (
+            self.config.default_offered_amps if self.state.active_transaction_id is not None else 0.0
+        )
+        self._apply_offered_amps(fallback_amps, source="SEM TxProfile ATIVO")
+
     @on(Action.set_charging_profile)
     async def on_set_charging_profile(self, connector_id, cs_charging_profiles, **kwargs):
         """
         Chamado quando o CSMS manda um novo perfil de carga (ex: limitar a
-        10A, ou uma rampa de vários degraus). Aqui simulamos o charge
-        point "aceitando" e agendando a aplicação de todos os períodos.
+        10A, ou uma rampa de vários degraus).
+
+        TxProfile é tratado com stacking de verdade — até
+        config.max_tx_profiles perfis simultâneos, um por stack_level,
+        com o de maior stack_level vencendo a qualquer instante (ver
+        _recompute_tx_profile_effective_amps). ChargePointMaxProfile e
+        TxDefaultProfile continuam com o comportamento original: sem
+        stacking, 1 perfil "de fundo" de cada vez, substituído por
+        completo a cada SetChargingProfile novo desse purpose — este
+        simulador tem 1 conector só, então não há cenário de load
+        balancing entre conectores pra justificar modelar isso também
+        (ver "NumberOfConnectors": "1" em on_get_configuration).
         """
+        purpose = cs_charging_profiles.get(
+            "charging_profile_purpose", ChargingProfilePurposeType.tx_profile
+        )
         schedule = cs_charging_profiles["charging_schedule"]
         periods = schedule["charging_schedule_period"]
         unit = schedule.get("charging_rate_unit", "A")
@@ -576,38 +692,146 @@ class EVChargerSim(BaseChargePoint):
             )
             periods = periods[: self.config.max_schedule_periods]
 
-        self._cancel_profile_task()
+        if not periods:
+            self.log.warning("SetChargingProfile recebido sem chargingSchedulePeriod")
+            return call_result.SetChargingProfile(status="Accepted")
 
-        if periods:
+        if purpose != ChargingProfilePurposeType.tx_profile:
+            # ChargePointMaxProfile / TxDefaultProfile — comportamento
+            # original, sem stacking: substitui o único perfil "de
+            # fundo" ativo. Um TxProfile (abaixo) sempre tem precedência
+            # sobre este, por ser específico da transação em andamento
+            # (ver _recompute_tx_profile_effective_amps).
+            self._cancel_profile_task()
             self.log.info(
-                f"[PERFIL RECEBIDO] connector={connector_id} | "
+                f"[PERFIL RECEBIDO] purpose={purpose} connector={connector_id} | "
                 f"{len(periods)} período(s) | unidade={unit}"
             )
             self._profile_task = asyncio.create_task(
                 self._run_charging_schedule(periods, unit)
             )
-        else:
-            self.log.warning("SetChargingProfile recebido sem chargingSchedulePeriod")
+            return call_result.SetChargingProfile(status="Accepted")
 
+        # ── TxProfile — stacking de verdade a partir daqui ──────────
+        state = self.state
+        transaction_id = cs_charging_profiles.get("transaction_id")
+        if transaction_id is not None and transaction_id != state.active_transaction_id:
+            # TxProfile explicitamente amarrado a uma transação que não
+            # é a ativa agora (ex: sessão anterior, ou id inventado) —
+            # um charger real não tem pra qual sessão aplicar isso.
+            self.log.warning(
+                f"[PERFIL RECEBIDO] TxProfile para transaction_id={transaction_id}, "
+                f"mas a transação ativa é {state.active_transaction_id} — Rejected."
+            )
+            return call_result.SetChargingProfile(status="Rejected")
+
+        stack_level = cs_charging_profiles.get("stack_level", 0)
+        profile_id = cs_charging_profiles.get("charging_profile_id")
+
+        is_new_level = stack_level not in self._tx_profiles
+        if is_new_level and len(self._tx_profiles) >= self.config.max_tx_profiles:
+            # Teto de perfis simultâneos (MaxChargingProfilesInstalled) —
+            # um stack_level JÁ instalado pode ser atualizado (não conta
+            # como novo), mas um stack_level inédito além do teto é
+            # Rejected, igual à memória limitada de um charger real.
+            self.log.warning(
+                f"[PERFIL RECEBIDO] TxProfile stack_level={stack_level} rejeitado — "
+                f"já há {len(self._tx_profiles)}/{self.config.max_tx_profiles} "
+                "TxProfiles instalados (MaxChargingProfilesInstalled)."
+            )
+            return call_result.SetChargingProfile(status="Rejected")
+
+        old = self._tx_profiles.get(stack_level)
+        if old is not None and old["task"] is not None and not old["task"].done():
+            old["task"].cancel()  # substituindo o perfil deste stack_level
+
+        self._tx_profiles[stack_level] = {
+            "profile_id": profile_id,
+            "stack_level": stack_level,
+            "periods": sorted(periods, key=lambda p: p.get("start_period", 0)),
+            "unit": unit,
+            "current_amps": None,
+            "expired": False,
+            "task": None,
+        }
+        self._tx_profiles[stack_level]["task"] = asyncio.create_task(
+            self._run_tx_profile_schedule(stack_level)
+        )
+
+        self.log.info(
+            f"[PERFIL RECEBIDO] TxProfile id={profile_id} stack_level={stack_level} "
+            f"connector={connector_id} | {len(periods)} período(s) | unidade={unit} | "
+            f"{len(self._tx_profiles)}/{self.config.max_tx_profiles} TxProfiles instalados"
+        )
         return call_result.SetChargingProfile(status="Accepted")
 
     @on(Action.clear_charging_profile)
-    async def on_clear_charging_profile(self, **kwargs):
+    async def on_clear_charging_profile(
+        self, id=None, connector_id=None, charging_profile_purpose=None, stack_level=None, **kwargs
+    ):
         """
-        Remove o(s) perfil(is) ativo(s) e volta à corrente padrão do
-        simulador (se sessão ativa) ou 0A.
-        """
-        self._cancel_profile_task()
-        state = self.state
+        Remove perfil(is) instalados, respeitando os critérios opcionais
+        da spec (id/connector_id/charging_profile_purpose/stack_level) —
+        sem nenhum critério, limpa tudo. Antes isso limpava tudo
+        INCONDICIONALMENTE mesmo com critérios informados; fazia sentido
+        enquanto só existia 1 perfil de cada vez, mas com até
+        config.max_tx_profiles TxProfiles instalados simultaneamente,
+        um ClearChargingProfile mirando um stack_level/id específico
+        apagaria os outros por engano.
 
-        fallback_amps = (
-            self.config.default_offered_amps if state.active_transaction_id is not None else 0.0
+        connector_id não é usado pra filtrar de fato — este simulador
+        tem 1 conector só (ver comentário em on_set_charging_profile),
+        então qualquer connector_id informado já se refere ao único
+        que existe.
+        """
+        has_criteria = any(
+            v is not None for v in (id, connector_id, charging_profile_purpose, stack_level)
         )
-        self._apply_offered_amps(fallback_amps, source="PERFIL LIMPO")
-        self.log.info(
-            "[CLEAR CHARGING PROFILE] perfil removido — voltando à corrente "
-            f"padrão ({fallback_amps:.0f}A)"
+        cleared_bits = []
+
+        # id/stack_level só batem contra TxProfiles — são os únicos que
+        # guardam esses dois campos aqui (o perfil "de fundo" é um slot
+        # único, sem id/stack_level rastreados por ele), então não tem
+        # como confirmar um match por essas chaves contra ele. Sem
+        # id/stack_level, o filtro vira só o purpose informado (ou tudo,
+        # sem nenhum critério).
+        targets_id_or_level = id is not None or stack_level is not None
+
+        clear_background = not has_criteria or (
+            not targets_id_or_level
+            and charging_profile_purpose in (
+                ChargingProfilePurposeType.charge_point_max_profile,
+                ChargingProfilePurposeType.tx_default_profile,
+            )
         )
+        clear_tx = (
+            not has_criteria
+            or targets_id_or_level
+            or charging_profile_purpose == ChargingProfilePurposeType.tx_profile
+        )
+
+        if clear_background and self._profile_task is not None:
+            self._cancel_profile_task()
+            cleared_bits.append("perfil de fundo (ChargePointMaxProfile/TxDefaultProfile)")
+
+        if clear_tx:
+            for level, profile in list(self._tx_profiles.items()):
+                matches_level = stack_level is None or level == stack_level
+                matches_id = id is None or profile["profile_id"] == id
+                if matches_level and matches_id:
+                    self._cancel_tx_profiles(level)
+                    cleared_bits.append(f"TxProfile stack_level={level}")
+
+        self._recompute_tx_profile_effective_amps()
+
+        if cleared_bits:
+            self.log.info(f"[CLEAR CHARGING PROFILE] removido(s): {', '.join(cleared_bits)}")
+        else:
+            self.log.info(
+                f"[CLEAR CHARGING PROFILE] nenhum perfil instalado casou com os "
+                f"critérios (id={id}, purpose={charging_profile_purpose}, "
+                f"stack_level={stack_level})"
+            )
         return call_result.ClearChargingProfile(status="Accepted")
 
     @on(Action.get_composite_schedule)
@@ -625,14 +849,15 @@ class EVChargerSim(BaseChargePoint):
         confirmar se algo de fato está sendo aplicado. Handler não
         existia até esta revisão.
 
-        Este simulador não empilha múltiplos perfis por
-        purpose/stackLevel — cada SetChargingProfile novo substitui o
-        anterior por completo (ver on_set_charging_profile/
-        _cancel_profile_task) — então a "composta" aqui é sempre só o
-        único perfil ativo no momento. Isso bate com o
-        ChargeProfileMaxStackLevel=1 já anunciado em GetConfiguration,
-        em vez de fingir uma composição de múltiplas camadas que este
-        charger não calcula de verdade.
+        TxProfile agora empilha de verdade, até config.max_tx_profiles
+        perfis por stack_level (ver _recompute_tx_profile_effective_amps)
+        — o valor reportado aqui (state.current_offered_amps) já é o
+        RESULTADO dessa composição, não o de um único perfil isolado:
+        toda mudança de corrente, venha de qual fonte for (TxProfile
+        vencedor, perfil de fundo, ou fallback), passa pelo mesmo funil
+        (_apply_offered_amps) antes de chegar aqui. ChargePointMaxProfile/
+        TxDefaultProfile continuam sem stacking entre si (1 de cada vez),
+        mas TxProfile tem precedência sobre eles de qualquer forma.
         """
         state = self.state
         if state.active_transaction_id is None:
@@ -983,16 +1208,18 @@ class EVChargerSim(BaseChargePoint):
             # ou só aceita SetChargingProfile e ignora o resto — anunciar
             # o profile sem elas é uma alegação vazia. Os valores aqui
             # refletem HONESTAMENTE o que este simulador faz de verdade:
-            # só 1 perfil ativo por vez, sem stacking real (ver
-            # on_set_charging_profile/_cancel_profile_task — cada perfil
-            # novo substitui o anterior por completo, não empilha por
-            # purpose/stackLevel).
-            {"key": "ChargeProfileMaxStackLevel", "readonly": True, "value": "1"},
+            # até max_tx_profiles TxProfiles empilhados por stack_level de
+            # verdade (ver _recompute_tx_profile_effective_amps) —
+            # ChargePointMaxProfile/TxDefaultProfile continuam sem
+            # stacking, 1 de cada vez, como sempre.
+            {"key": "ChargeProfileMaxStackLevel", "readonly": True,
+             "value": str(self.config.max_tx_profiles)},
             {"key": "ChargingScheduleAllowedChargingRateUnit", "readonly": True,
              "value": "Current,Power"},
             {"key": "ChargingScheduleMaxPeriods", "readonly": True,
              "value": str(self.config.max_schedule_periods)},
-            {"key": "MaxChargingProfilesInstalled", "readonly": True, "value": "1"},
+            {"key": "MaxChargingProfilesInstalled", "readonly": True,
+             "value": str(self.config.max_tx_profiles)},
         ]
         if key:
             # CSMS pediu chaves específicas: filtra e reporta as desconhecidas
@@ -1352,7 +1579,10 @@ class EVChargerSim(BaseChargePoint):
         try:
             # Evita que um agendamento de perfil pendente da sessão
             # anterior "acorde" no meio desta e pise na corrente aplicada.
+            # TxProfile é escopado à transação por definição (spec) —
+            # não sobrevive a uma sessão nova.
             self._cancel_profile_task()
+            self._cancel_tx_profiles()
 
             # Reseta SoC/medidor pra não encadear com a sessão anterior.
             state.battery_soc_percent = self.config.initial_soc_percent
@@ -1510,6 +1740,7 @@ class EVChargerSim(BaseChargePoint):
         """
         state = self.state
         self._cancel_profile_task()
+        self._cancel_tx_profiles()  # TxProfile não sobrevive ao fim da transação (spec)
 
         # Para FISICAMENTE agora, mesmo que o CSMS ainda não saiba —
         # replica um charger real (abre o contator na hora, avisa o
