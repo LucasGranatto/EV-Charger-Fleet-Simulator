@@ -50,6 +50,13 @@ pra start/stop/pause/resume/fault/clear/disconnect/remover. Chargers
 podem ser adicionados e removidos a qualquer momento, com o processo já
 rodando.
 
+O painel tem duas abas: **Frota** (a grade de cards acima, aberta por
+padrão) e **Histórico** — o gráfico de SoC/corrente/limite ofertado de
+cada charger, ampliado. Antes esse gráfico vivia espremido dentro do
+próprio card; agora clicar no ícone 📈 de qualquer card leva direto pra
+essa aba com aquele charger já selecionado (ou troque de charger por
+lá mesmo, pelo seletor/setas ⟨ ⟩ no topo da aba).
+
 A faixa "Todos" no topo do painel dispara start/stop/pause/resume/
 disconnect/fault/clear em todos os chargers **visíveis no momento**
 (respeita o filtro de busca — filtre por prefixo e a ação em massa afeta
@@ -156,6 +163,49 @@ e derrubam o painel web antes do processo sair, em vez de simplesmente
 matar tudo no meio. Um segundo Ctrl+C/SIGTERM durante esse processo
 força saída imediata, pro caso de algo travar no meio do shutdown.
 
+## Limites físicos e Smart Charging
+
+Todo charger simulado anuncia (via `GetConfiguration`) e **aplica de
+fato** dois tetos que um charger real também teria:
+
+```bash
+python -m evchargersim --hardware-max-amps 32 --max-schedule-periods 10 --url ws://seu-csms:9001
+```
+
+- `--hardware-max-amps` (padrão: 32) — teto físico de corrente da
+  fiação/breaker simulados. Anunciado na chave `CurrentMax` e
+  **clampado de verdade** em qualquer corrente oferecida — corrente
+  padrão da sessão, ou um `SetChargingProfile` do CSMS pedindo mais do
+  que isso. Um charger real não entrega mais corrente do que seu
+  hardware suporta, não importa o que o CSMS peça; este simulador
+  agora também não.
+- `--max-schedule-periods` (padrão: 10) — quantos períodos de um
+  `chargingSchedule` este charger de fato guarda (memória de firmware
+  limitada). Anunciado na chave `ChargingScheduleMaxPeriods` e um
+  `SetChargingProfile` com mais períodos que isso tem o excedente
+  truncado, não silenciosamente aceito e ignorado por completo.
+
+Ambos podem ser configurados por charger individual em modo frota (via
+`POST /api/chargers`, mesma whitelist de `battery_capacity_wh`/
+`nominal_voltage` — útil pra simular uma frota com chargers de
+capacidades físicas diferentes, ex: alguns 16A, outros 32A).
+
+`GetConfiguration` também passou a expor as 4 chaves padrão OCPP 1.6 de
+capacidade do feature profile `SmartCharging`
+(`ChargeProfileMaxStackLevel`, `ChargingScheduleAllowedChargingRateUnit`,
+`ChargingScheduleMaxPeriods`, `MaxChargingProfilesInstalled`) — antes
+`SupportedFeatureProfiles` anunciava `SmartCharging` sem nenhuma delas,
+uma alegação que um CSMS não tinha como verificar. `ChargeProfileMaxStackLevel`
+e `MaxChargingProfilesInstalled` valem `1`: este simulador não empilha
+múltiplos perfis por `purpose`/`stackLevel` — cada `SetChargingProfile`
+novo substitui o anterior por completo.
+
+E o handler de `GetCompositeSchedule` — que estava totalmente ausente —
+agora responde com o efeito líquido do perfil ativo no conector
+(`Rejected` se não há sessão, já que não há nada a compor). É o comando
+que confirma na prática se um charger faz Smart Charging de verdade, em
+vez de só confiar no que `SupportedFeatureProfiles` alega.
+
 ## Testando robustez do CSMS
 
 ```bash
@@ -164,6 +214,16 @@ python -m evchargersim --chaos-disconnect-interval 30 --chaos-drop-rate 0.1
 
 Ver `--help` pra lista completa de flags de chaos (latência, drop rate,
 intervalo de desconexão) — funcionam em qualquer modo.
+
+Numa queda simulada por `--chaos-disconnect-interval`, a reconexão **não
+reenvia `BootNotification`** — só esvazia a fila offline e resincroniza
+o `StatusNotification` atual. Uma sessão que estava carregando continua
+carregando sob o mesmo `transaction_id` depois de reconectar, do jeito
+que um charger real se comporta (a transação não é amarrada à conexão
+WebSocket). `BootNotification` sai só uma vez de verdade, no boot do
+processo — reenviá-lo em toda reconexão de rede fazia alguns CSMS
+tratarem a volta como um reboot físico e perderem a transação em
+andamento, mesmo sem nenhum `StopTransaction` ter sido enviado.
 
 ## Notas desta revisão do modo frota/dashboard
 
@@ -260,3 +320,93 @@ Dois bugs reais foram encontrados e corrigidos nesse processo:
   à leva inteira nos dois casos.
 - Só existe no painel web por enquanto — sem equivalente em `--fleet`/
   CLI. Ver [Importar chargers de um arquivo](#importar-chargers-de-um-arquivo).
+
+## Notas da revisão do gráfico de histórico e indicadores de chaos
+
+- **Gráfico do card reformulado** — grade horizontal na escala de SoC
+  (0/25/50/75/100%) com rótulos de eixo, escala de corrente rotulada no
+  eixo direito, marcação de tempo no eixo X, área preenchida sob a
+  linha de SoC, e uma 3ª série (limite ofertado pelo CSMS, tracejada) ao
+  lado da corrente real — o vão entre as duas mostra visualmente se o
+  carro está sendo limitado pelo CSMS ou é o tapering da própria
+  bateria, sem precisar ler nenhum número.
+- **Indicadores de chaos corrigidos** — o dot âmbar de "chaos ativo" no
+  ícone do card foi removido; ele ficava aceso o tempo todo mesmo sem
+  nenhum chaos de verdade ligado, porque a checagem antiga contava
+  `max_offline_queue_size` (teto de fila, default 500) como se fosse
+  instabilidade ativa. No lugar: um badge neutro com a contagem de
+  grupos de chaos realmente ativos (desconexão/latência/perda), um
+  resumo em texto no painel expandido ("Ativo agora: ..."), e destaque
+  visual nos campos do formulário que pertencem a um grupo em efeito.
+
+## Notas da revisão de UI (header, grid de fundo, aba Histórico)
+
+- **Header reformulado** — virou uma barra elevada própria (cartão com
+  borda, sombra e um trilho teal de destaque no topo), com o ícone da
+  marca de volta num badge/emblema (supersede a nota "ícone de raio
+  removido" de uma revisão anterior) e um selo mono "OCPP 1.6J" na
+  subtitle, separado por um divisor vertical do indicador de conexão.
+- **Grid de fundo em dois níveis** — trocada a grade única e uniforme
+  por uma grade tipo blueprint: linhas finas a cada 17px quase
+  imperceptíveis, e linhas um pouco mais visíveis a cada 68px marcando
+  a escala maior, mais uma vinheta radial suave nos cantos. Mais
+  detalhe, mas mais sutil no todo.
+- **Aba "Histórico"** — o gráfico de cada charger saiu de dentro do
+  card (pequeno demais pra leitura fina) e ganhou uma aba própria, com
+  o mesmo SVG/lógica de renderização reaproveitados num container bem
+  maior (o `viewBox` escala tudo — grade, texto, linhas —
+  proporcionalmente, sem precisar de uma versão "grande" separada do
+  código). O botão 📈 de cada card agora navega pra lá em vez de
+  expandir algo inline; como só existe um gráfico visível por vez, o
+  antigo `Map` de pollers por card virou um poller único.
+
+## Notas da revisão de protocolo (reconexão, TriggerMessage, reboot)
+
+Motivada por um CSMS real que não reconhecia uma sessão ainda ativa
+depois de uma queda simulada por `--chaos-disconnect-interval`:
+
+- **Reconexão de transporte não reenvia mais `BootNotification`** — só
+  esvazia a fila offline e resincroniza o `StatusNotification` atual.
+  Ver [Testando robustez do CSMS](#testando-robustez-do-csms) acima.
+  Um caso de borda foi tratado junto: se a conexão cai *antes* do boot
+  inicial ser aceito (ainda não existe registro nenhum do lado do
+  CSMS), a reconexão volta a tentar o boot normalmente em vez de pular
+  pro resync.
+- **Hard reset e firmware update também mandavam `BootNotification`
+  uma única vez**, sem confirmar `Accepted` — o mesmo problema, só que
+  num lugar onde reenviar o Boot é o comportamento certo (reboot de
+  verdade, ao contrário de um blip de rede). Os dois agora usam um
+  helper compartilhado (`_simulate_reboot`) que tenta até o CSMS
+  aceitar, e aborta a sequência (sem `Available`/`Installed`
+  prematuros) se a conexão cair no meio.
+- **`TriggerMessage` respondia `Accepted` pra tipos que não faziam
+  nada** — de 6 valores válidos (`BootNotification`,
+  `DiagnosticsStatusNotification`, `FirmwareStatusNotification`,
+  `Heartbeat`, `MeterValues`, `StatusNotification`), só 3 eram
+  tratados; os outros 3 recebiam "ok, vou mandar" e nada chegava.
+  `BootNotification` agora é tratado de verdade; os dois de
+  Diagnostics/Firmware — que só existem como parte de um fluxo já em
+  andamento — respondem `NotImplemented`, a resposta que a spec já
+  prevê pra isso.
+
+## Notas da revisão de Smart Charging e limites físicos
+
+Ver [Limites físicos e Smart Charging](#limites-físicos-e-smart-charging)
+acima para o uso. Resumo do que mudou:
+
+- Novos `--hardware-max-amps` (padrão 32) e `--max-schedule-periods`
+  (padrão 10) em `SimConfig`, configuráveis também por charger
+  individual em modo frota.
+- `GetConfiguration` passou a expor `CurrentMax` (teto físico de
+  corrente) e as 4 chaves padrão de capacidade `SmartCharging`
+  (`ChargeProfileMaxStackLevel`, `ChargingScheduleAllowedChargingRateUnit`,
+  `ChargingScheduleMaxPeriods`, `MaxChargingProfilesInstalled`) — antes
+  nenhuma das duas existia, então um CSMS que depende delas pra saber o
+  limite físico real (em vez de assumir um valor arbitrário) ou pra
+  confirmar a capacidade de Smart Charging anunciada não tinha como.
+- Os dois tetos agora são **aplicados de verdade**, não só anunciados:
+  `_apply_offered_amps()` clampa qualquer corrente oferecida acima de
+  `hardware_max_amps`, e `on_set_charging_profile` trunca perfis com
+  mais períodos que `max_schedule_periods`.
+- Handler de `GetCompositeSchedule` implementado (estava totalmente
+  ausente) — devolve o efeito líquido do perfil ativo no conector.
