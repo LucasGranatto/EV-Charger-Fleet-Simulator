@@ -169,7 +169,7 @@ Todo charger simulado anuncia (via `GetConfiguration`) e **aplica de
 fato** dois tetos que um charger real também teria:
 
 ```bash
-python -m evchargersim --hardware-max-amps 32 --max-schedule-periods 10 --url ws://seu-csms:9001
+python -m evchargersim --hardware-max-amps 32 --max-schedule-periods 10 --max-tx-profiles 3 --url ws://seu-csms:9001
 ```
 
 - `--hardware-max-amps` (padrão: 32) — teto físico de corrente da
@@ -184,8 +184,12 @@ python -m evchargersim --hardware-max-amps 32 --max-schedule-periods 10 --url ws
   limitada). Anunciado na chave `ChargingScheduleMaxPeriods` e um
   `SetChargingProfile` com mais períodos que isso tem o excedente
   truncado, não silenciosamente aceito e ignorado por completo.
+- `--max-tx-profiles` (padrão: 3) — quantos perfis `TxProfile`
+  simultâneos (um por `stackLevel`) este charger aceita ter instalados
+  ao mesmo tempo. Ver [stacking de TxProfile](#limites-físicos-e-smart-charging)
+  abaixo.
 
-Ambos podem ser configurados por charger individual em modo frota (via
+Todos podem ser configurados por charger individual em modo frota (via
 `POST /api/chargers`, mesma whitelist de `battery_capacity_wh`/
 `nominal_voltage` — útil pra simular uma frota com chargers de
 capacidades físicas diferentes, ex: alguns 16A, outros 32A).
@@ -195,10 +199,26 @@ capacidade do feature profile `SmartCharging`
 (`ChargeProfileMaxStackLevel`, `ChargingScheduleAllowedChargingRateUnit`,
 `ChargingScheduleMaxPeriods`, `MaxChargingProfilesInstalled`) — antes
 `SupportedFeatureProfiles` anunciava `SmartCharging` sem nenhuma delas,
-uma alegação que um CSMS não tinha como verificar. `ChargeProfileMaxStackLevel`
-e `MaxChargingProfilesInstalled` valem `1`: este simulador não empilha
-múltiplos perfis por `purpose`/`stackLevel` — cada `SetChargingProfile`
-novo substitui o anterior por completo.
+uma alegação que um CSMS não tinha como verificar.
+
+**Stacking de `TxProfile`** — até `--max-tx-profiles` (padrão: 3)
+perfis `TxProfile` simultâneos, um por `stackLevel` distinto, com o de
+maior `stackLevel` vencendo a qualquer instante (spec: *"Higher values
+have precedence over lower values"*). Um `SetChargingProfile` com um
+`stackLevel` inédito além do teto é `Rejected`; o mesmo `stackLevel` já
+instalado é atualizado/substituído normalmente (não conta como novo).
+Um `TxProfile` amarrado a um `transactionId` que não é o da sessão
+ativa também é `Rejected`. `ClearChargingProfile` respeita os critérios
+opcionais da spec (`id`/`chargingProfilePurpose`/`stackLevel`) — sem
+nenhum, limpa tudo; com eles, limpa só o que casa, sem afetar os outros
+perfis instalados. `TxProfile` é escopado à transação por definição: é
+limpo automaticamente no início de cada sessão nova e no fim da
+sessão em que foi definido, não sobrevive entre transações.
+
+`ChargePointMaxProfile` e `TxDefaultProfile` continuam sem stacking
+entre si — um perfil "de fundo" de cada vez, substituído por completo
+a cada `SetChargingProfile` novo desse purpose — mas um `TxProfile`
+sempre tem precedência sobre eles quando ambos estão ativos.
 
 E o handler de `GetCompositeSchedule` — que estava totalmente ausente —
 agora responde com o efeito líquido do perfil ativo no conector
@@ -394,9 +414,9 @@ depois de uma queda simulada por `--chaos-disconnect-interval`:
 Ver [Limites físicos e Smart Charging](#limites-físicos-e-smart-charging)
 acima para o uso. Resumo do que mudou:
 
-- Novos `--hardware-max-amps` (padrão 32) e `--max-schedule-periods`
-  (padrão 10) em `SimConfig`, configuráveis também por charger
-  individual em modo frota.
+- Novos `--hardware-max-amps` (padrão 32), `--max-schedule-periods`
+  (padrão 10) e `--max-tx-profiles` (padrão 3) em `SimConfig`,
+  configuráveis também por charger individual em modo frota.
 - `GetConfiguration` passou a expor `CurrentMax` (teto físico de
   corrente) e as 4 chaves padrão de capacidade `SmartCharging`
   (`ChargeProfileMaxStackLevel`, `ChargingScheduleAllowedChargingRateUnit`,
@@ -404,9 +424,23 @@ acima para o uso. Resumo do que mudou:
   nenhuma das duas existia, então um CSMS que depende delas pra saber o
   limite físico real (em vez de assumir um valor arbitrário) ou pra
   confirmar a capacidade de Smart Charging anunciada não tinha como.
-- Os dois tetos agora são **aplicados de verdade**, não só anunciados:
+- Os limites agora são **aplicados de verdade**, não só anunciados:
   `_apply_offered_amps()` clampa qualquer corrente oferecida acima de
   `hardware_max_amps`, e `on_set_charging_profile` trunca perfis com
   mais períodos que `max_schedule_periods`.
 - Handler de `GetCompositeSchedule` implementado (estava totalmente
   ausente) — devolve o efeito líquido do perfil ativo no conector.
+- **`TxProfile` passou a empilhar de verdade** — até `max_tx_profiles`
+  perfis simultâneos, um por `stackLevel`, com o de maior `stackLevel`
+  vencendo a qualquer instante (`_recompute_tx_profile_effective_amps`).
+  Antes QUALQUER `SetChargingProfile`, de qualquer purpose, substituía
+  o único perfil ativo por completo — `ChargeProfileMaxStackLevel` e
+  `MaxChargingProfilesInstalled` chegaram a ser anunciados como `1`
+  numa revisão anterior justamente por honestidade a essa limitação;
+  agora reportam `max_tx_profiles` de verdade. `ChargePointMaxProfile`/
+  `TxDefaultProfile` continuam sem stacking entre si (1 perfil "de
+  fundo" de cada vez), mas um `TxProfile` sempre tem precedência sobre
+  eles. `ClearChargingProfile` ganhou junto a limpeza seletiva por
+  critério (`id`/`purpose`/`stackLevel`) que faltava — antes limpava
+  tudo incondicionalmente, o que apagaria os outros perfis instalados
+  por engano agora que existe mais de um simultâneo.
