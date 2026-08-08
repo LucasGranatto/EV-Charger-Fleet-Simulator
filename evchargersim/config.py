@@ -39,6 +39,7 @@ CHARGER_OVERRIDE_FIELDS = frozenset({
     "nominal_voltage",
     "hardware_max_amps",
     "max_schedule_periods",
+    "max_tx_profiles",
     "call_timeout_seconds",
     "chaos_disconnect_interval_seconds",
     "chaos_disconnect_jitter_seconds",
@@ -86,6 +87,18 @@ class SimConfig:
     # em on_set_charging_profile se o CSMS mandar mais que isso.
     hardware_max_amps: float = 32.0
     max_schedule_periods: int = 10
+
+    # Quantos perfis TxProfile este charger aceita ter instalados AO
+    # MESMO TEMPO, um por stack_level distinto — reportado nas chaves
+    # "ChargeProfileMaxStackLevel"/"MaxChargingProfilesInstalled" (ver
+    # on_get_configuration) e de fato aplicado em on_set_charging_profile:
+    # um novo stack_level além deste teto é Rejected, não aceito sem
+    # limite. TxProfile (só esse purpose empilha de verdade — ver
+    # _recompute_tx_profile_effective_amps) é escopado à transação: o
+    # de MAIOR stack_level em efeito a cada instante vence, igual à
+    # semântica real da spec (ChargePointMaxProfile/TxDefaultProfile
+    # continuam sem stacking, 1 perfil de cada vez, como antes).
+    max_tx_profiles: int = 3
 
     # Timeout para chamadas críticas (Start/StopTransaction) — sem isso,
     # um CSMS que trava sem responder deixa o simulador pendurado pra
@@ -180,6 +193,7 @@ class SimConfig:
             "nominal_voltage": args.voltage,
             "hardware_max_amps": args.hardware_max_amps,
             "max_schedule_periods": args.max_schedule_periods,
+            "max_tx_profiles": args.max_tx_profiles,
             "call_timeout_seconds": args.call_timeout,
             "chaos_disconnect_interval_seconds": args.chaos_disconnect_interval,
             "chaos_disconnect_jitter_seconds": args.chaos_disconnect_jitter,
@@ -244,6 +258,13 @@ def _parse_args(argv=None):
                               "anunciado via GetConfiguration (chave "
                               "ChargingScheduleMaxPeriods) e usado pra truncar perfis "
                               "maiores recebidos via SetChargingProfile (padrão: 10).")
+    parser.add_argument("--max-tx-profiles", type=int, default=None,
+                         help="Quantos perfis TxProfile este charger aceita ter "
+                              "instalados ao mesmo tempo, um por stack_level distinto "
+                              "— anunciado via GetConfiguration (chaves "
+                              "ChargeProfileMaxStackLevel/MaxChargingProfilesInstalled) "
+                              "e de fato aplicado: um SetChargingProfile TxProfile além "
+                              "deste teto é Rejected (padrão: 3).")
     parser.add_argument("--call-timeout", type=float, default=None,
                          help="Timeout (s) para Start/StopTransaction (padrão: 30.0).")
     parser.add_argument("--chaos-disconnect-interval", type=float, default=None,
@@ -282,5 +303,3 @@ def _parse_args(argv=None):
                          help="Se definido, exige esse token em todo request a /api/* do painel "
                               "(padrão: desabilitado, sem autenticação).")
     return parser.parse_args(argv)
-
-
