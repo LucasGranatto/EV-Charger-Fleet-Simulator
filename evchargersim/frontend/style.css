@@ -10,8 +10,6 @@
    ─────────────────────────────────────────────────────────────── */
 :root {
   --bg: #0a0d13;
-  --bg-grid-minor: rgba(45, 216, 196, 0.022);
-  --bg-grid-major: rgba(45, 216, 196, 0.045);
   --surface: #0f141d;
   --surface-raised: #151b26;
   --surface-hover: #1a2230;
@@ -46,21 +44,12 @@
 
 body {
   margin: 0;
-  /* Grade em dois níveis, tipo papel de projeto (blueprint): linhas
-     "minor" bem finas a cada 17px marcam a textura sem competir com o
-     conteúdo, e linhas "major" um pouco mais visíveis a cada 68px (4×)
-     dão uma referência de escala mais grossa — no lugar da grade única
-     e uniforme de antes, que em qualquer opacidade sempre parecia "uma
-     grade" chapada em vez de um plano de fundo texturizado. A vinheta
-     radial no topo-esquerda mantém o brilho perto do header; a segunda,
-     mais ampla, escurece sutilmente os cantos pra puxar o olho pro
-     conteúdo central em vez do fundo.
+  /* Fundo liso — só as vinhetas radiais (brilho sutil perto do header
+     + escurecimento leve nos cantos) sobre a cor base. Grade de
+     blueprint removida a pedido; sem ela essas duas camadas continuam
+     dando profundidade ao fundo sem textura repetitiva.
   */
   background:
-    linear-gradient(var(--bg-grid-major) 1px, transparent 1px) 0 0 / 100% 68px,
-    linear-gradient(90deg, var(--bg-grid-major) 1px, transparent 1px) 0 0 / 68px 100%,
-    linear-gradient(var(--bg-grid-minor) 1px, transparent 1px) 0 0 / 100% 17px,
-    linear-gradient(90deg, var(--bg-grid-minor) 1px, transparent 1px) 0 0 / 17px 100%,
     radial-gradient(ellipse 1100px 480px at 12% -12%, rgba(45, 216, 196, 0.04), transparent 60%),
     radial-gradient(ellipse 1400px 900px at 50% 8%, transparent 45%, rgba(0, 0, 0, 0.22) 100%),
     var(--bg);
