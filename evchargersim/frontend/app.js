@@ -220,9 +220,11 @@ function collectAddOverrides() {
   const batteryKwh = parseFloat(document.getElementById("adv-battery-kwh").value);
   const initialSoc = parseFloat(document.getElementById("adv-initial-soc").value);
   const defaultAmps = parseFloat(document.getElementById("adv-default-amps").value);
+  const phases = document.getElementById("adv-phases").value;
   if (!Number.isNaN(batteryKwh) && batteryKwh > 0) overrides.battery_capacity_wh = batteryKwh * 1000;
   if (!Number.isNaN(initialSoc)) overrides.initial_soc_percent = initialSoc;
   if (!Number.isNaN(defaultAmps) && defaultAmps >= 0) overrides.default_offered_amps = defaultAmps;
+  if (phases) overrides.number_of_phases = parseInt(phases, 10);
   return overrides;
 }
 
@@ -534,6 +536,35 @@ async function applyChaos(chargeId, cardEl) {
     btn.disabled = false;
   }
 }
+
+// Ajusta o número de fases de um charger JÁ CONECTADO, ao vivo — POST
+// /api/chargers/<id>/phases (ver EVChargerSim.apply_power_overrides()).
+// Sem botão "Aplicar" dedicado: dispara direto no "change" do <select>
+// (ver createCard). Se falhar, updateCard() vai repor o select pro
+// valor real assim que o próximo snapshot chegar — não precisa
+// reverter manualmente aqui.
+async function setPhases(chargeId, selectEl) {
+  selectEl.disabled = true;
+  try {
+    const res = await apiFetch(`/api/chargers/${encodeURIComponent(chargeId)}/phases`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ number_of_phases: parseInt(selectEl.value, 10) }),
+    });
+    const data = await res.json();
+    if (data.ok) {
+      toast(`[${chargeId}] ${data.message}`, "success");
+    } else {
+      toast(`[${chargeId}] ${data.message}`, "error");
+    }
+  } catch (e) {
+    toast(`[${chargeId}] falha ao ajustar fases: ${e}`, "error");
+  } finally {
+    selectEl.disabled = false;
+  }
+}
+
+
 
 // ── Aba "Histórico" — gráfico ampliado de UM charger por vez ────────
 //
@@ -916,6 +947,14 @@ function createCard(c) {
         <button data-role="btn-clear">Clear</button>
       </div>
       <div class="btn-row">
+        <label class="phases-label" for="phases-${c.charge_point_id}">Fases</label>
+        <select id="phases-${c.charge_point_id}" data-role="phases-select" title="Número de fases — afeta todo cálculo de potência, aplica ao vivo">
+          <option value="1">1 (monofásico)</option>
+          <option value="2">2</option>
+          <option value="3">3 (trifásico)</option>
+        </select>
+      </div>
+      <div class="btn-row">
         <button data-role="btn-disconnect">Disconnect</button>
         <button class="danger" data-role="btn-remove">Remover</button>
       </div>
@@ -924,8 +963,14 @@ function createCard(c) {
   const chargeId = c.charge_point_id;
   const idTagInput = el.querySelector('[data-role="id-tag"]');
   const faultSelect = el.querySelector('[data-role="fault-select"]');
+  const phasesSelect = el.querySelector('[data-role="phases-select"]');
   idTagInput.addEventListener("input", () => { idTagInputs[chargeId] = idTagInput.value; });
   faultSelect.addEventListener("change", () => { faultSelections[chargeId] = faultSelect.value; });
+  // Aplica imediatamente ao trocar (sem botão "Aplicar" separado, ao
+  // contrário do painel de chaos) — é um único campo, não um grupo de
+  // valores relacionados, então a fricção extra de um botão dedicado
+  // não compensa. setPhases() já cuida do toast de sucesso/erro.
+  phasesSelect.addEventListener("change", () => setPhases(chargeId, phasesSelect));
 
   el.querySelector('[data-role="btn-start"]').addEventListener("click", () =>
     sendCommand(chargeId, "start", [idTagInput.value]));
@@ -961,6 +1006,17 @@ function updateCard(el, c) {
   const hasTx = c.active_transaction_id !== null;
 
   el.dataset.status = status;
+
+  // Reflete o valor ATUAL de number_of_phases (pode ter sido ajustado
+  // ao vivo por outra aba/pessoa) — diferente do painel de chaos, um
+  // <select> não tem o problema de "digitação interrompida" ao
+  // reaplicar a cada snapshot, então é seguro sincronizar sempre.
+  // Só pula enquanto o próprio select está focado, pra não fechar o
+  // dropdown embaixo do dedo/mouse do usuário no meio de uma escolha.
+  const phasesSelect = el.querySelector('[data-role="phases-select"]');
+  if (phasesSelect && document.activeElement !== phasesSelect) {
+    phasesSelect.value = String(c.number_of_phases ?? 1);
+  }
 
   // Guardado, não aplicado ao formulário aqui — ver toggleChaosPanel().
   // Reaplicar a cada snapshot (a cada ~1s com sessão ativa) tornaria

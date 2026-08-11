@@ -902,6 +902,15 @@ svg { fill: currentColor; }
 
 .btn-row { display: flex; flex-wrap: wrap; gap: 6px; }
 
+.phases-label {
+  display: flex;
+  align-items: center;
+  font-size: 11px;
+  color: var(--text-faint);
+  padding: 0 2px;
+}
+[data-role="phases-select"] { flex: 1; min-width: 0; }
+
 .start-row { display: flex; gap: 6px; }
 .start-row input[type=text] { flex: 1; min-width: 0; }
 
