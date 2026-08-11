@@ -75,6 +75,13 @@ _CHAOS_FIELDS = frozenset({
     "max_offline_queue_size",
 })
 
+# Campos de energia/potência ajustáveis AO VIVO via
+# POST /api/chargers/<id>/phases — ver EVChargerSim.apply_power_overrides().
+# Separado de _CHAOS_FIELDS por semântica (isto não é instabilidade de
+# rede, é config de instalação elétrica) mesmo os dois seguindo o mesmo
+# padrão de "editável em tempo real, sem remover/readicionar o charger".
+_POWER_FIELDS = frozenset({"number_of_phases"})
+
 class EVChargerSim(BaseChargePoint):
     """
     Representa um Charge Point AC genérico do ponto de vista do protocolo.
@@ -196,11 +203,12 @@ class EVChargerSim(BaseChargePoint):
     def _limit_to_amps(self, limit: float, unit: str) -> float:
         """
         Converte um limite de chargingSchedulePeriod para amperes.
-        "W" é convertido usando a tensão nominal (simplificação
-        monofásica); "A" passa direto.
+        "W" é convertido usando a tensão nominal × number_of_phases
+        (nominal_voltage é fase-neutro; ver comentário em SimConfig);
+        "A" passa direto.
         """
         if unit == "W":
-            return round(limit / self.config.nominal_voltage, 2)
+            return round(limit / (self.config.nominal_voltage * self.config.number_of_phases), 2)
         if unit and unit != "A":
             self.log.warning(
                 f"[PERFIL RECEBIDO] chargingRateUnit desconhecido '{unit}' — "
@@ -872,7 +880,12 @@ class EVChargerSim(BaseChargePoint):
 
         unit = charging_rate_unit or ChargingRateUnitType.amps
         if unit == ChargingRateUnitType.watts:
-            limit = round(state.current_offered_amps * self.config.nominal_voltage, 1)
+            limit = round(
+                state.current_offered_amps
+                * self.config.nominal_voltage
+                * self.config.number_of_phases,
+                1,
+            )
         else:
             limit = state.current_offered_amps
 
@@ -1864,7 +1877,11 @@ class EVChargerSim(BaseChargePoint):
                 if state.session_suspended or state.current_actual_amps <= 0:
                     continue
 
-                power_w = self.config.nominal_voltage * state.current_actual_amps
+                power_w = (
+                    self.config.nominal_voltage
+                    * state.current_actual_amps
+                    * self.config.number_of_phases
+                )
                 energy_delta_wh = (
                     power_w * (interval_seconds / 3600) * self.config.simulation_speed
                 )
@@ -1954,7 +1971,12 @@ class EVChargerSim(BaseChargePoint):
                             "unit": "V",
                         },
                         {
-                            "value": str(round(voltage_now * state.current_actual_amps, 1)),
+                            "value": str(round(
+                                voltage_now
+                                * state.current_actual_amps
+                                * self.config.number_of_phases,
+                                1,
+                            )),
                             "context": "Sample.Periodic",
                             "measurand": "Power.Active.Import",
                             "unit": "W",
@@ -2014,7 +2036,11 @@ class EVChargerSim(BaseChargePoint):
                     self._build_meter_values_request(voltage_now), kind="MeterValues"
                 )
 
-                power_kw = round((voltage_now * state.current_actual_amps) / 1000, 2)
+                power_kw = round(
+                    (voltage_now * state.current_actual_amps * self.config.number_of_phases)
+                    / 1000,
+                    2,
+                )
                 energy_kwh = round(state.energy_meter_wh / 1000, 2)
                 self._record_history_sample(power_kw, energy_kwh)
 
@@ -2330,6 +2356,11 @@ class EVChargerSim(BaseChargePoint):
             "offered_amps": round(s.current_offered_amps, 1),
             "actual_amps": round(s.current_actual_amps, 1),
             "hardware_max_amps": self.config.hardware_max_amps,
+            # Valor ATUAL (não do boot) — reflete ajuste ao vivo via
+            # POST /api/chargers/<id>/phases (ver apply_power_overrides).
+            # O painel usa isso pra pré-preencher o seletor de fases do
+            # card com o que está valendo de fato agora.
+            "number_of_phases": self.config.number_of_phases,
             "availability_status": s.availability_status,
             "reservation_id": s.reservation_id,
             "queue_len": len(s.offline_queue),
@@ -2393,6 +2424,41 @@ class EVChargerSim(BaseChargePoint):
 
         self.log.warning(f"[CHAOS] ajustado ao vivo via painel: {', '.join(applied)}")
         return f"chaos atualizado: {', '.join(applied)}"
+
+    async def apply_power_overrides(self, overrides: dict) -> str:
+        """
+        Ajusta o número de fases deste charger JÁ CONECTADO, em tempo
+        real — usado por POST /api/chargers/<id>/phases no painel web.
+        Muda self.config.number_of_phases, o MESMO objeto lido em todo
+        cálculo de potência (energy_accumulator_loop, MeterValues,
+        GetCompositeSchedule em W, conversão W→A de SetChargingProfile
+        — ver comentário em SimConfig.number_of_phases) — o efeito é
+        imediato no próximo ciclo, sem precisar remover/readicionar o
+        charger.
+
+        Trocar o número de fases no meio de uma sessão não existe em
+        hardware real (é uma propriedade fixa da instalação elétrica),
+        mas permitir isso aqui evita ter que remover e recriar o
+        charger só pra testar como o CSMS reage a uma potência
+        diferente — é só um simulador.
+        """
+        unknown = set(overrides) - _POWER_FIELDS
+        if unknown:
+            raise ValueError(f"campo(s) inválido(s) para fases: {', '.join(sorted(unknown))}")
+        if "number_of_phases" not in overrides:
+            raise ValueError("number_of_phases não informado")
+
+        raw_value = overrides["number_of_phases"]
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"valor inválido para 'number_of_phases': {raw_value!r}")
+        if value not in (1, 2, 3):
+            raise ValueError("number_of_phases deve ser 1, 2 ou 3")
+
+        self.config.number_of_phases = value
+        self.log.warning(f"[FASES] ajustado ao vivo via painel: number_of_phases={value}")
+        return f"número de fases atualizado: {value}"
 
     def _cache_auth_result(self, id_tag: str, id_tag_info: dict):
         """

@@ -37,6 +37,7 @@ CHARGER_OVERRIDE_FIELDS = frozenset({
     "battery_capacity_wh",
     "initial_soc_percent",
     "nominal_voltage",
+    "number_of_phases",
     "hardware_max_amps",
     "max_schedule_periods",
     "max_tx_profiles",
@@ -72,6 +73,21 @@ class SimConfig:
     initial_soc_percent: float = 20.0
 
     nominal_voltage: float = 225.0
+    # Todo cálculo de potência do simulador (energy_accumulator_loop,
+    # MeterValues, GetCompositeSchedule em W, conversão W→A recebida do
+    # CSMS) era estritamente monofásico: P = nominal_voltage × amps,
+    # sem multiplicar por fase nenhuma. Isso é uma simplificação válida
+    # só pra ligação monofásica de fato — pra trifásico (comum em CSMS
+    # OCPP reais; ex: 32A trifásico ≈ 22kW, o "AC rápido" típico
+    # europeu), nominal_voltage é tratado como tensão fase-neutro e a
+    # potência real é number_of_phases × nominal_voltage × amps. Com
+    # number_of_phases=1 (padrão) o comportamento não muda em nada —
+    # só passa a valer quando o charger simulado é configurado como
+    # trifásico. Sem isso, um CSMS que eleva a corrente pensando num
+    # charger trifásico via SetChargingProfile via a sessão continuar
+    # "lenta" mesmo após o limite subir, porque o simulador só
+    # computava 1/3 (ou 1/número de fases real) da potência esperada.
+    number_of_phases: int = 1
 
     # ── Limites físicos do hardware — sem isso, o simulador deixava
     # aplicar qualquer corrente que o CSMS pedisse via SetChargingProfile,
@@ -191,6 +207,7 @@ class SimConfig:
             "battery_capacity_wh": args.battery_wh,
             "initial_soc_percent": args.initial_soc,
             "nominal_voltage": args.voltage,
+            "number_of_phases": args.phases,
             "hardware_max_amps": args.hardware_max_amps,
             "max_schedule_periods": args.max_schedule_periods,
             "max_tx_profiles": args.max_tx_profiles,
@@ -246,7 +263,10 @@ def _parse_args(argv=None):
     parser.add_argument("--initial-soc", type=float, default=None,
                          help="SoC inicial de cada sessão, em %% (padrão: 20.0).")
     parser.add_argument("--voltage", type=float, default=None,
-                         help="Tensão nominal de referência em V (padrão: 225.0).")
+                         help="Tensão nominal de referência em V, fase-neutro (padrão: 225.0).")
+    parser.add_argument("--phases", type=int, default=None, choices=[1, 2, 3],
+                         help="Número de fases do charger simulado — afeta todo cálculo de "
+                              "potência (padrão: 1 = monofásico; use 3 para trifásico).")
     parser.add_argument("--hardware-max-amps", type=float, default=None,
                          help="Teto físico de corrente deste charger (fiação/breaker) — "
                               "anunciado via GetConfiguration (chave CurrentMax) e "

@@ -26,6 +26,12 @@ POST /api/chargers (que só valem na CRIAÇÃO do charger), este endpoint
 muda a config de uma sessão já em andamento, sem precisar remover/
 readicionar.
 
+POST /api/chargers/<charge_point_id>/phases ajusta o número de fases
+(1/2/3) de um charger JÁ CONECTADO, em tempo real — ver
+EVChargerSim.apply_power_overrides(). Mesmo padrão do endpoint de
+chaos acima, mas afeta todo cálculo de potência (energia acumulada,
+MeterValues, GetCompositeSchedule em W) em vez de instabilidade de rede.
+
 /api/events é Server-Sent Events (SSE): mantém a conexão aberta e empurra
 um novo snapshot só quando algo de fato muda (comparação por igualdade
 do JSON serializado), com um comentário de keepalive periódico pra não
@@ -291,6 +297,8 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._handle_add_charger()
             elif self.path.startswith("/api/chargers/") and self.path.endswith("/chaos"):
                 self._handle_set_chaos()
+            elif self.path.startswith("/api/chargers/") and self.path.endswith("/phases"):
+                self._handle_set_phases()
             else:
                 self._send_json({"error": "not found"}, status=404)
 
@@ -392,6 +400,46 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._send_json({"ok": False, "message": str(exc)}, status=400)
             except Exception as exc:
                 logger.exception(f"[PAINEL] erro ajustando chaos de '{charge_point_id}'")
+                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+
+        def _handle_set_phases(self):
+            """
+            POST /api/chargers/<id>/phases — {"number_of_phases": 3}.
+            Ajusta o número de fases de um charger JÁ CONECTADO em tempo
+            real (sem precisar remover/readicionar) — mesmo padrão de
+            _handle_set_chaos, mas separado dele por semântica (isto
+            não é instabilidade de rede, é config de instalação
+            elétrica que afeta todo cálculo de potência). Whitelist e
+            validação de valor vivem em EVChargerSim.apply_power_overrides(),
+            não aqui.
+            """
+            try:
+                payload = self._read_json_body()
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+                return
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
+                return
+
+            prefix, suffix = "/api/chargers/", "/phases"
+            charge_point_id = urllib.parse.unquote(self.path[len(prefix):-len(suffix)])
+            cp = registry.get(charge_point_id)
+            if cp is None:
+                self._send_json(
+                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
+                    status=404,
+                )
+                return
+
+            try:
+                future = asyncio.run_coroutine_threadsafe(cp.apply_power_overrides(payload), loop)
+                message = future.result(timeout=15)
+                self._send_json({"ok": True, "message": message})
+            except ValueError as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=400)
+            except Exception as exc:
+                logger.exception(f"[PAINEL] erro ajustando fases de '{charge_point_id}'")
                 self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
 
         def _handle_command(self):
