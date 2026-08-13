@@ -75,6 +75,17 @@ _CHAOS_FIELDS = frozenset({
     "max_offline_queue_size",
 })
 
+# Campos ajustáveis AO VIVO via POST /api/chargers/<id>/phases — ver
+# EVChargerSim.apply_power_overrides(). Mesmo padrão de _CHAOS_FIELDS:
+# whitelist própria em vez de reusar CHARGER_OVERRIDE_FIELDS (config.py),
+# já que aquela também cobre campos só válidos na CRIAÇÃO do charger.
+_POWER_FIELDS = frozenset({"number_of_phases"})
+
+# Mesmas choices do --phases da CLI (config.py) — instalação elétrica
+# real só existe em 1/2/3 fases; qualquer outro valor não corresponde a
+# nada fisicamente montável.
+_VALID_PHASE_COUNTS = (1, 2, 3)
+
 class EVChargerSim(BaseChargePoint):
     """
     Representa um Charge Point AC genérico do ponto de vista do protocolo.
@@ -193,14 +204,41 @@ class EVChargerSim(BaseChargePoint):
     # fallback pra chaves tipo "startPeriod"/"idTag")
     # --------------------------------------------------------
 
+    def _power_w(self, amps: float, voltage: float | None = None) -> float:
+        """
+        Converte uma corrente por fase (A) em potência total (W),
+        considerando o número de fases configurado — P = number_of_phases
+        × tensão fase-neutro × amps. Ponto único usado por TODO cálculo
+        de potência do simulador (perfil recebido em W, GetCompositeSchedule
+        em W, MeterValues/Power.Active.Import, acumulador de energia e
+        histórico do painel) — antes cada um desses fazia essa conta
+        duplicada e estritamente monofásica (sem multiplicar por fase
+        nenhuma), então mudar number_of_phases (CLI --phases ou ao vivo
+        via POST /api/chargers/<id>/phases) não tinha efeito real em
+        nada além do valor cru guardado em config: a sessão de um
+        charger "trifásico" continuava acumulando energia e reportando
+        MeterValues como se fosse monofásico, entregando só 1/3 da
+        potência esperada pelo CSMS. voltage opcional pra reusar uma
+        leitura de read_grid_voltage() já feita no mesmo ciclo (em vez
+        de assumir sempre a tensão nominal); usa self.config.nominal_voltage
+        por padrão.
+        """
+        v = self.config.nominal_voltage if voltage is None else voltage
+        return self.config.number_of_phases * v * amps
+
     def _limit_to_amps(self, limit: float, unit: str) -> float:
         """
         Converte um limite de chargingSchedulePeriod para amperes.
-        "W" é convertido usando a tensão nominal (simplificação
-        monofásica); "A" passa direto.
+        "W" é convertido dividindo pela potência total de 1A "de
+        referência" (number_of_phases × tensão nominal) — ver _power_w
+        — não só pela tensão nominal isolada; um SetChargingProfile em W
+        pedindo, digamos, 10800W num charger trifásico (225V × 3 fases)
+        deve virar 16A por fase, não 48A (que seria o resultado de tratar
+        os 10800W como se o charger fosse monofásico). "A" passa direto —
+        já é um valor por fase, independente do número de fases.
         """
         if unit == "W":
-            return round(limit / self.config.nominal_voltage, 2)
+            return round(limit / self._power_w(1.0), 2)
         if unit and unit != "A":
             self.log.warning(
                 f"[PERFIL RECEBIDO] chargingRateUnit desconhecido '{unit}' — "
@@ -901,7 +939,7 @@ class EVChargerSim(BaseChargePoint):
 
         unit = charging_rate_unit or ChargingRateUnitType.amps
         if unit == ChargingRateUnitType.watts:
-            limit = round(state.current_offered_amps * self.config.nominal_voltage, 1)
+            limit = round(self._power_w(state.current_offered_amps), 1)
         else:
             limit = state.current_offered_amps
 
@@ -1893,7 +1931,7 @@ class EVChargerSim(BaseChargePoint):
                 if state.session_suspended or state.current_actual_amps <= 0:
                     continue
 
-                power_w = self.config.nominal_voltage * state.current_actual_amps
+                power_w = self._power_w(state.current_actual_amps)
                 energy_delta_wh = (
                     power_w * (interval_seconds / 3600) * self.config.simulation_speed
                 )
@@ -1983,7 +2021,7 @@ class EVChargerSim(BaseChargePoint):
                             "unit": "V",
                         },
                         {
-                            "value": str(round(voltage_now * state.current_actual_amps, 1)),
+                            "value": str(round(self._power_w(state.current_actual_amps, voltage_now), 1)),
                             "context": "Sample.Periodic",
                             "measurand": "Power.Active.Import",
                             "unit": "W",
@@ -2043,7 +2081,7 @@ class EVChargerSim(BaseChargePoint):
                     self._build_meter_values_request(voltage_now), kind="MeterValues"
                 )
 
-                power_kw = round((voltage_now * state.current_actual_amps) / 1000, 2)
+                power_kw = round(self._power_w(state.current_actual_amps, voltage_now) / 1000, 2)
                 energy_kwh = round(state.energy_meter_wh / 1000, 2)
                 self._record_history_sample(power_kw, energy_kwh)
 
@@ -2359,6 +2397,13 @@ class EVChargerSim(BaseChargePoint):
             "offered_amps": round(s.current_offered_amps, 1),
             "actual_amps": round(s.current_actual_amps, 1),
             "hardware_max_amps": self.config.hardware_max_amps,
+            # Valor ATUAL (não o do boot) — reflete ajuste ao vivo via
+            # POST /api/chargers/<id>/phases (apply_power_overrides()).
+            # Sem isso, o <select> de fases do painel (app.js lê
+            # c.number_of_phases) sempre voltava pro padrão "1 fase" em
+            # cada refresh, mesmo com o charger criado/ajustado como
+            # trifásico.
+            "number_of_phases": self.config.number_of_phases,
             "availability_status": s.availability_status,
             "reservation_id": s.reservation_id,
             "queue_len": len(s.offline_queue),
@@ -2422,6 +2467,46 @@ class EVChargerSim(BaseChargePoint):
 
         self.log.warning(f"[CHAOS] ajustado ao vivo via painel: {', '.join(applied)}")
         return f"chaos atualizado: {', '.join(applied)}"
+
+    async def apply_power_overrides(self, overrides: dict) -> str:
+        """
+        Ajusta parâmetros de instalação elétrica deste charger JÁ
+        CONECTADO, em tempo real — usado por POST /api/chargers/<id>/phases
+        no painel web. Faltava por completo (o endpoint chamava este
+        método, mas ele nunca tinha sido escrito — todo POST em
+        /phases derrubava com AttributeError, sempre 500 pro painel).
+
+        Só number_of_phases por enquanto (_POWER_FIELDS) — muda o campo
+        direto em self.config, o MESMO objeto lido por _power_w() a
+        cada cálculo de potência (perfil recebido em W, MeterValues,
+        acumulador de energia, GetCompositeSchedule, histórico do
+        painel) — efeito imediato no próximo ciclo, sem precisar
+        remover/readicionar o charger. Mesmo padrão de
+        apply_chaos_overrides(); `async def` só por consistência com o
+        resto da API do painel, não há await de verdade aqui dentro.
+        """
+        unknown = set(overrides) - _POWER_FIELDS
+        if unknown:
+            raise ValueError(f"campo(s) inválido(s) para fases: {', '.join(sorted(unknown))}")
+        if not overrides:
+            raise ValueError("nenhum campo de fases informado")
+
+        raw_value = overrides["number_of_phases"]
+        try:
+            value = int(raw_value)
+        except (TypeError, ValueError):
+            raise ValueError(f"valor inválido para 'number_of_phases': {raw_value!r}")
+        if value not in _VALID_PHASE_COUNTS:
+            raise ValueError(
+                f"'number_of_phases' deve ser um de {_VALID_PHASE_COUNTS} — recebido {value}"
+            )
+
+        old_value = self.config.number_of_phases
+        self.config.number_of_phases = value
+        self.log.warning(
+            f"[FASES] ajustado ao vivo via painel: number_of_phases {old_value} → {value}"
+        )
+        return f"number_of_phases atualizado: {old_value} → {value}"
 
     def _cache_auth_result(self, id_tag: str, id_tag_info: dict):
         """
