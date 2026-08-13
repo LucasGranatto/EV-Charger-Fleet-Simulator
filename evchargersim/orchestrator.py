@@ -22,6 +22,7 @@ from dataclasses import replace
 
 import websockets
 import websockets.exceptions
+from ocpp.v16.enums import Reason
 
 from .charger import EVChargerSim
 from .config import CHARGER_OVERRIDE_FIELDS, SimConfig
@@ -402,7 +403,80 @@ async def main(argv=None):
             raise ValueError(f"charger '{charge_point_id}' não encontrado")
         # Tira do registry ANTES de cancelar — o painel não deve mais
         # conseguir mandar comando pra um charger que já está saindo.
-        registry.pop(charge_point_id, None)
+        # Guarda a referência à parte (cp) porque ainda precisamos dela
+        # logo abaixo pro StopTransaction gracioso, mesmo já fora do
+        # registry.
+        cp = registry.pop(charge_point_id, None)
+
+        # Encerramento gracioso: se há sessão ATIVA (ou um START em
+        # voo) e o charger está ONLINE, encerra a sessão no CSMS ANTES
+        # de cancelar a task. Faltava por completo — remover pelo
+        # painel ia direto pro cancel(), que só derruba a conexão
+        # (igual ao botão "Disconnect", que é chaos de propósito — ver
+        # comando "disconnect" em execute_command). Do ponto de vista do
+        # CSMS isso é indistinguível de um charger real perdendo
+        # energia no meio de uma sessão: nenhum StopTransaction chega,
+        # a sessão fica "Charging" pendurada até o próprio CSMS arbitrar
+        # isso via timeout de conexão/heartbeat — exatamente o
+        # "disconnect não esperado" que estava sendo reportado.
+        #
+        # Só tenta se ONLINE: offline não há como entregar nada ao CSMS
+        # agora — enfileirar seria inútil, já que a task é cancelada
+        # antes de qualquer reconexão futura ter chance de esvaziar a
+        # fila offline.
+        if cp is not None and cp.is_online and cp._start_in_progress:
+            # StartTransaction já em voo (Authorize aceito, request
+            # mandado), mas ainda sem StartTransaction.conf — não há
+            # active_transaction_id pra encerrar AGORA. Mesmo mecanismo
+            # de sinal que on_reset usa (_abort_pending_start_reason):
+            # quando _send_start_transaction resolver, ela mesma dispara
+            # o StopTransaction sozinha. Best-effort, não bloqueante —
+            # não há como esperar de forma segura aqui sem risco de
+            # StopTransaction duplicado (o próprio fluxo interno já
+            # dispara o dele via create_task assim que resolver); só
+            # cobre o caso da resposta chegar antes da conexão cair de
+            # verdade lá embaixo (task.cancel() + fechamento do
+            # websocket, alguns instantes depois deste ponto).
+            cp._abort_pending_start_reason = Reason.other
+            dash_logger.info(
+                f"[PAINEL] '{charge_point_id}' será removido com um StartTransaction "
+                "em voo — sinalizado para encerrar assim que confirmar."
+            )
+
+        if cp is not None and cp.state.active_transaction_id is not None and cp.is_online:
+            # skip_status_flow=True porque não faz sentido reportar
+            # Finishing->Available de um charger que está de saída
+            # (mesmo padrão de hard reset/fault — ver
+            # _handle_reset_flow/_send_fault_notification). wait_for com
+            # timeout curto (bem abaixo do timeout HTTP de 15s do DELETE
+            # em control_panel.py) — se o CSMS não confirmar a tempo,
+            # remove mesmo assim, sem travar o painel esperando
+            # indefinidamente por um StopTransaction que pode não vir.
+            dash_logger.info(
+                f"[PAINEL] '{charge_point_id}' será removido com sessão ativa "
+                f"(tx={cp.state.active_transaction_id}) — encerrando com "
+                "StopTransaction antes de desconectar..."
+            )
+            try:
+                await asyncio.wait_for(
+                    cp._send_stop_transaction(
+                        cp.state.active_transaction_id,
+                        reason=Reason.other,
+                        skip_status_flow=True,
+                    ),
+                    timeout=10.0,
+                )
+            except asyncio.TimeoutError:
+                dash_logger.warning(
+                    f"[PAINEL] StopTransaction de '{charge_point_id}' não confirmou "
+                    "em 10s ao remover — removendo mesmo assim."
+                )
+            except Exception:
+                dash_logger.exception(
+                    f"[PAINEL] erro encerrando sessão de '{charge_point_id}' antes "
+                    "de remover — removendo mesmo assim."
+                )
+
         task.cancel()
         try:
             await task
