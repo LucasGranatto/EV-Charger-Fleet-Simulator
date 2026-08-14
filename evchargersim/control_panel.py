@@ -110,15 +110,77 @@ class _PayloadTooLarge(ValueError):
     """Content-Length declarado excede _MAX_BODY_BYTES — ver _read_json_body."""
 
 
+class _SnapshotBroadcaster:
+    """
+    Produtor ÚNICO do snapshot serializado (JSON) de todo o registry,
+    compartilhado por TODAS as conexões SSE abertas — ver _handle_sse.
+
+    Antes, cada conexão SSE (a ThreadingHTTPServer dá uma thread própria
+    por conexão) reconstruía `[cp.get_status_dict() for cp in
+    registry.values()]` + `json.dumps(...)` inteiramente por conta
+    própria, a cada _SSE_POLL_SECONDS, pra sempre. Com N abas do painel
+    abertas numa frota de M chargers, isso é N × M chamadas de
+    get_status_dict() e N serializações JSON completas por tick — na
+    prática quase sempre só pra descobrir que nada mudou desde o tick
+    anterior. Uma única thread de fundo agora faz esse trabalho
+    (O(M) por tick, independente de quantos clientes SSE estão
+    conectados) e guarda o resultado aqui; cada thread de cliente só lê
+    o payload já pronto (get_payload() — barato, é só um lock curto) e
+    compara com o que ela mesma já mandou, exatamente como antes.
+
+    daemon=True e stop() via threading.Event (não join()) — a thread
+    nunca deve segurar o shutdown do processo; ver
+    _ThreadingHTTPServerWithBroadcaster.shutdown() abaixo.
+    """
+
+    def __init__(self, registry: dict, poll_seconds: float):
+        self._registry = registry
+        self._poll_seconds = poll_seconds
+        self._lock = threading.Lock()
+        self._payload = "[]"
+        self._stop_event = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run, daemon=True, name="sse-snapshot-broadcaster"
+        )
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop_event.set()
+
+    def get_payload(self) -> str:
+        with self._lock:
+            return self._payload
+
+    def _run(self):
+        while not self._stop_event.is_set():
+            try:
+                snapshot = [cp.get_status_dict() for cp in self._registry.values()]
+                payload = json.dumps(snapshot)
+                with self._lock:
+                    self._payload = payload
+            except Exception:
+                # Um erro isolado aqui não pode derrubar a ÚNICA fonte
+                # do snapshot pra todo mundo — mantém o último payload
+                # válido no ar e tenta de novo no próximo tick, igual ao
+                # padrão de "um erro isolado não derruba o loop" usado
+                # nos loops de fundo de EVChargerSim (heartbeat, meter
+                # values, etc.).
+                pass
+            self._stop_event.wait(self._poll_seconds)
+
+
 def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logger: logging.Logger,
-                           spawn, remove, broadcast, control_token: "str | None"):
+                           spawn, remove, broadcast, control_token: "str | None",
+                           snapshot_broadcaster: _SnapshotBroadcaster):
     """
     Fábrica de classe do handler HTTP do painel de controle — precisa ser
     uma fábrica (em vez de uma classe direta) porque BaseHTTPRequestHandler
     não tem como receber argumentos extras no __init__ (o ThreadingHTTPServer
     o instancia sozinho por requisição); fechar `registry`/`loop`/`logger`/
-    `spawn`/`remove`/`broadcast`/`control_token` no escopo aqui é o jeito de
-    fazer todos chegarem até o handler.
+    `spawn`/`remove`/`broadcast`/`control_token`/`snapshot_broadcaster` no
+    escopo aqui é o jeito de fazer todos chegarem até o handler.
 
     `spawn` é `async def (charge_point_id, overrides=None) -> str` — `overrides`
     é um dict opcional de campos de SimConfig (whitelist em
@@ -138,6 +200,10 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
     `control_token`: se não for None/vazio, todo request a /api/* precisa
     apresentar esse token (ver _is_authorized) — None desliga a
     autenticação (comportamento padrão, mesmo de antes).
+
+    `snapshot_broadcaster`: fonte única do payload JSON servido por
+    _handle_sse — ver _SnapshotBroadcaster. Uma thread de fundo (não este
+    handler) o mantém atualizado.
     """
 
     class ControlPanelHandler(BaseHTTPRequestHandler):
@@ -236,14 +302,19 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             GET /api/events — Server-Sent Events: mantém a conexão
             aberta (uma thread da ThreadingHTTPServer por cliente
             conectado, liberada quando o cliente desconecta) e empurra
-            um novo snapshot só quando o JSON serializado muda de fato
-            em relação ao último enviado — substitui o polling de
-            /api/state que o frontend fazia a cada 1.5s incondicional,
-            reduzindo tanto a latência de atualização (a checagem em
-            memória roda a cada _SSE_POLL_SECONDS) quanto o tráfego
-            quando nada muda (a maior parte do tempo, já que o estado só
-            muda de verdade a cada ciclo de MeterValues ou em resposta a
-            um comando).
+            um novo snapshot só quando o JSON muda de fato em relação
+            ao último enviado — substitui o polling de /api/state que o
+            frontend fazia a cada 1.5s incondicional.
+
+            O payload em si vem de snapshot_broadcaster.get_payload()
+            (ver _SnapshotBroadcaster) — uma ÚNICA thread de fundo,
+            compartilhada por toda conexão SSE aberta, é quem de fato
+            monta get_status_dict() de cada charger e serializa o JSON,
+            a cada _SSE_POLL_SECONDS. Esta função só lê o resultado já
+            pronto e compara com o que ELA mesma já mandou — leitura
+            barata (lock curto + comparação de string), então o custo
+            de computação não escala mais com o número de clientes SSE
+            conectados, só com o tamanho da frota.
 
             EventSource do browser reconecta sozinho se a conexão cair
             (chaos_disconnect, restart do processo, etc.) — não precisa
@@ -264,8 +335,7 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             last_sent_at = time.monotonic()
             try:
                 while True:
-                    snapshot = [cp.get_status_dict() for cp in registry.values()]
-                    payload = json.dumps(snapshot)
+                    payload = snapshot_broadcaster.get_payload()
                     now = time.monotonic()
                     if payload != last_payload:
                         self.wfile.write(f"data: {payload}\n\n".encode("utf-8"))
@@ -527,6 +597,24 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
 
 
 
+class _ThreadingHTTPServerWithBroadcaster(ThreadingHTTPServer):
+    """
+    ThreadingHTTPServer normal, só que shutdown() também para o
+    _SnapshotBroadcaster junto — sem isso, orchestrator.py precisaria
+    saber da existência do broadcaster e pará-lo à parte (mais um lugar
+    pra lembrar de atualizar); daemon=True já garante que a thread não
+    prende o processo de pé sozinha em último caso, isso aqui só evita
+    deixá-la rodando (tick de 0.5s pra sempre) depois que o server em
+    si já não existe mais.
+    """
+    snapshot_broadcaster: "_SnapshotBroadcaster | None" = None
+
+    def shutdown(self):
+        if self.snapshot_broadcaster is not None:
+            self.snapshot_broadcaster.stop()
+        super().shutdown()
+
+
 def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventLoop,
                           logger: logging.Logger, spawn, remove, broadcast,
                           control_token: "str | None" = None) -> ThreadingHTTPServer:
@@ -549,9 +637,19 @@ def start_control_server(registry: dict, port: int, loop: asyncio.AbstractEventL
     executa um comando em todos os chargers do registry — ou só num
     subconjunto — de uma vez (ações "todos" do painel).
     `control_token`: se definido, toda rota /api/* exige esse token.
+
+    Sobe também o _SnapshotBroadcaster (thread própria) que alimenta
+    /api/events — ver _handle_sse/_SnapshotBroadcaster. Uma única
+    instância, compartilhada por toda conexão SSE aberta.
     """
-    handler_cls = _make_control_handler(registry, loop, logger, spawn, remove, broadcast, control_token)
-    server = ThreadingHTTPServer(("0.0.0.0", port), handler_cls)
+    snapshot_broadcaster = _SnapshotBroadcaster(registry, _SSE_POLL_SECONDS)
+    snapshot_broadcaster.start()
+
+    handler_cls = _make_control_handler(
+        registry, loop, logger, spawn, remove, broadcast, control_token, snapshot_broadcaster
+    )
+    server = _ThreadingHTTPServerWithBroadcaster(("0.0.0.0", port), handler_cls)
+    server.snapshot_broadcaster = snapshot_broadcaster
     thread = threading.Thread(target=server.serve_forever, daemon=True, name="control-panel")
     thread.start()
     logger.info(f"[PAINEL] painel de controle web em http://localhost:{port}")
