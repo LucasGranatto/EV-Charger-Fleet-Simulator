@@ -171,7 +171,13 @@ function confirmDialog(message) {
   const cancelBtn = document.getElementById("confirm-cancel");
   title.textContent = message;
   overlay.hidden = false;
-  okBtn.focus();
+  // Foco no botão SEGURO (Cancelar) por padrão, não no destrutivo
+  // ("Remover", classe .danger) -- um Enter reflexo (ex: vindo de ter
+  // digitado algo em outro campo, ou só o hábito de confirmar diálogos
+  // com Enter) não deve conseguir disparar a ação perigosa sem uma
+  // interação deliberada (clique ou Tab até o botão "Remover" e só
+  // então Enter/Espaço).
+  cancelBtn.focus();
 
   return new Promise((resolve) => {
     function cleanup(result) {
@@ -184,8 +190,14 @@ function confirmDialog(message) {
     function onOk() { cleanup(true); }
     function onCancel() { cleanup(false); }
     function onKeydown(e) {
+      // Só Escape é tratado aqui, sempre como "cancelar" (padrão
+      // universal de diálogo). Enter NÃO é interceptado de propósito:
+      // <button> já ativa via Enter/Espaço quem estiver com foco no
+      // momento (comportamento nativo do browser), então Enter confirma
+      // só se o usuário tiver movido o foco até o botão "Remover" --
+      // nunca como padrão. Antes, Enter confirmava incondicionalmente
+      // aqui, ignorando qual botão estava focado.
       if (e.key === "Escape") cleanup(false);
-      if (e.key === "Enter") cleanup(true);
     }
     okBtn.addEventListener("click", onOk);
     cancelBtn.addEventListener("click", onCancel);
