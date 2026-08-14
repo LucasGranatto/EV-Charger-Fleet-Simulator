@@ -1057,7 +1057,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 /* ── Responsivo ────────────────────────────────────────────────── */
 @media (max-width: 640px) {
-  body { padding: 20px 16px 48px; background-size: 100% 48px, 48px 100%, 100% 12px, 12px 100%, auto, auto, auto; }
+  body { padding: 20px 16px 48px; }
   .topbar { flex-direction: column; align-items: flex-start; }
   .topbar-right { width: 100%; justify-content: space-between; }
   .view-tabs { width: 100%; }
