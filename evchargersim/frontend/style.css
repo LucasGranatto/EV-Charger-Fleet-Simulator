@@ -988,7 +988,19 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 .modal p { margin: 0 0 16px; font-size: 13.5px; line-height: 1.5; }
 
+.modal-input { width: 100%; margin: 0 0 16px; }
+
 .modal-actions { display: flex; justify-content: flex-end; gap: 8px; }
+
+/* ── Empty state: carregando (1ª pintura, antes do 1º snapshot) ──── */
+/* Mesma caixa visual do .empty "vazio de verdade", só o texto do
+   título pulsando — sinaliza "ainda não sei se tem charger ou não",
+   distinto de "sei que não tem nenhum" (renderEmptyState(false)). Sem
+   isso os dois casos mostravam o texto idêntico "Nenhum charger
+   conectado", ambíguo entre "frota vazia" e "painel ainda carregando".
+*/
+.empty-loading strong { animation: empty-loading-pulse 1.4s ease-in-out infinite; }
+@keyframes empty-loading-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.45; } }
 
 /* ── Toasts empilháveis ────────────────────────────────────────── */
 .toast-stack {
@@ -1073,6 +1085,6 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .led.charging, .sse-dot, .wave-track { animation: none; }
+  .led.charging, .sse-dot, .wave-track, .empty-loading strong { animation: none; }
   .gauge-cell, .card, .wave-path { transition: none; }
 }

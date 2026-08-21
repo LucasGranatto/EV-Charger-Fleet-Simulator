@@ -1,14 +1,11 @@
-const FAULT_CODES = ["ground_failure", "over_current_failure", "over_voltage",
-  "connector_lock_failure", "power_meter_failure", "weak_signal", "other_error"];
-
-const STATUS_LABEL = {
-  charging: "Carregando", suspended: "Suspenso", available: "Disponível",
-  faulted: "Falha", inoperative: "Inoperativo",
-};
-
-// Ordem de prioridade quando currentSort === "status" — falha primeiro
-// (o que mais precisa de atenção), offline por último.
-const STATUS_SORT_RANK = { faulted: 0, charging: 1, suspended: 2, available: 3, inoperative: 4 };
+// FAULT_CODES, STATUS_LABEL, STATUS_SORT_RANK, escapeHtml, escapeAttr,
+// parseChargerIdsFromText, displayStatus, buildFaultOptions,
+// buildLinePoints, formatSecondsAgo e sortChargers agora vivem em
+// pure.js (carregado ANTES deste arquivo em index.html) — são as
+// funções/constantes sem nenhuma dependência de DOM, extraídas de
+// propósito pra dar pra testar isoladamente (ver tests/app.test.js)
+// sem precisar simular um browser inteiro. Continuam disponíveis aqui
+// como globais, exatamente como antes.
 
 // Elementos de card já criados, por charge_point_id — o coração da
 // renderização por diff. Uma vez que o card de um charger existe, ele
@@ -33,12 +30,15 @@ let currentSort = "id";
 // próximo evento do stream.
 let lastChargers = [];
 
-function escapeHtml(value) {
-  return String(value).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
-}
-
-function escapeAttr(value) {
-  return escapeHtml(value).replace(/"/g, "&quot;");
+// Atalho pra achar um elemento pelo atributo data-role dentro de um
+// container (cardEl, panel, document, etc.) — substitui o padrão
+// `container.querySelector('[data-role="X"]')` que se repetia 40+
+// vezes espalhado por createCard/updateCard/renderHistoryChart (cada
+// ocorrência reescrevendo a mesma string de seletor CSS à mão).
+// Comportamento idêntico, mesmo seletor por trás — só reduz a
+// repetição textual e centraliza esse padrão num único lugar.
+function qr(container, role) {
+  return container.querySelector(`[data-role="${role}"]`);
 }
 
 // ── Autenticação (--control-token, opcional) ────────────────────────
@@ -83,9 +83,46 @@ async function apiFetch(url, options = {}) {
   return res;
 }
 
-function promptForToken() {
+function promptDialog(message, defaultValue = "") {
+  const overlay = document.getElementById("prompt-overlay");
+  const title = document.getElementById("prompt-title");
+  const input = document.getElementById("prompt-input");
+  const okBtn = document.getElementById("prompt-ok");
+  const cancelBtn = document.getElementById("prompt-cancel");
+  title.textContent = message;
+  input.value = defaultValue;
+  overlay.hidden = false;
+  input.focus();
+  input.select();
+
+  return new Promise((resolve) => {
+    function cleanup(result) {
+      overlay.hidden = true;
+      okBtn.removeEventListener("click", onOk);
+      cancelBtn.removeEventListener("click", onCancel);
+      overlay.removeEventListener("keydown", onKeydown);
+      resolve(result);
+    }
+    function onOk() { cleanup(input.value); }
+    function onCancel() { cleanup(null); } // null == "cancelado", mesma convenção do window.prompt()
+    function onKeydown(e) {
+      // Diferente do confirmDialog (ação destrutiva): aqui Enter
+      // confirma incondicionalmente, igual ao window.prompt() nativo
+      // que este modal substitui — salvar um token é uma ação de baixo
+      // risco e reversível (é só digitar de novo), não precisa da
+      // mesma cautela de foco que a remoção de um charger.
+      if (e.key === "Escape") cleanup(null);
+      if (e.key === "Enter") cleanup(input.value);
+    }
+    okBtn.addEventListener("click", onOk);
+    cancelBtn.addEventListener("click", onCancel);
+    overlay.addEventListener("keydown", onKeydown);
+  });
+}
+
+async function promptForToken() {
   const current = getControlToken();
-  const value = window.prompt(
+  const value = await promptDialog(
     "Token do painel (--control-token do servidor) — deixe vazio se o painel não exige token:",
     current
   );
@@ -295,23 +332,8 @@ async function addCharger() {
   // assim que ele(s) conectar(em) de verdade.
 }
 
-// Extrai IDs de um .txt: um por linha e/ou separados por vírgula
-// (os dois formatos ao mesmo tempo são tolerados), linhas em branco e
-// espaços em volta descartados, duplicatas removidas preservando a
-// 1ª ocorrência — arquivo exportado de qualquer planilha/lista simples
-// já funciona sem exigir um formato exato.
-function parseChargerIdsFromText(text) {
-  const seen = new Set();
-  const ids = [];
-  for (const raw of text.split(/[\n,]+/)) {
-    const id = raw.trim();
-    if (id && !seen.has(id)) {
-      seen.add(id);
-      ids.push(id);
-    }
-  }
-  return ids;
-}
+// parseChargerIdsFromText agora vive em pure.js.
+
 
 // Lê o .txt escolhido no <input type="file"> inteiramente no browser
 // (FileReader) — nenhuma rota nova no backend: cada ID vira o mesmo
@@ -423,7 +445,7 @@ const CHAOS_FIELD_ROLES = {
 
 function populateChaosForm(cardEl, chaos) {
   for (const [role, field] of Object.entries(CHAOS_FIELD_ROLES)) {
-    const input = cardEl.querySelector(`[data-role="${role}"]`);
+    const input = qr(cardEl, role);
     if (input) input.value = chaos[field] ?? 0;
   }
 }
@@ -481,16 +503,16 @@ function updateChaosIndicators(el, chaos) {
   const groups = activeChaosGroups(chaos);
   const descriptions = groups.map((g) => describeChaosGroup(g, chaos));
 
-  const badge = el.querySelector('[data-role="chaos-badge"]');
+  const badge = qr(el, "chaos-badge");
   badge.hidden = groups.length === 0;
   badge.textContent = String(groups.length);
 
-  const toggleBtn = el.querySelector('[data-role="chaos-toggle"]');
+  const toggleBtn = qr(el, "chaos-toggle");
   toggleBtn.title = groups.length === 0
     ? "Ajustar chaos deste charger"
     : `Chaos ativo: ${descriptions.join(" · ")}`;
 
-  const summary = el.querySelector('[data-role="chaos-active-summary"]');
+  const summary = qr(el, "chaos-active-summary");
   if (summary) {
     summary.textContent = groups.length === 0
       ? "Nenhum chaos ativo no momento."
@@ -504,21 +526,21 @@ function updateChaosIndicators(el, chaos) {
 }
 
 function toggleChaosPanel(cardEl) {
-  const panel = cardEl.querySelector('[data-role="chaos-panel"]');
+  const panel = qr(cardEl, "chaos-panel");
   const opening = panel.hidden;
   panel.hidden = !opening;
   if (opening) {
     populateChaosForm(cardEl, cardEl._chaosSnapshot || {});
-    cardEl.querySelector('[data-role="chaos-status"]').textContent = "";
+    qr(cardEl, "chaos-status").textContent = "";
   }
 }
 
 async function applyChaos(chargeId, cardEl) {
-  const btn = cardEl.querySelector('[data-role="chaos-apply"]');
-  const statusEl = cardEl.querySelector('[data-role="chaos-status"]');
+  const btn = qr(cardEl, "chaos-apply");
+  const statusEl = qr(cardEl, "chaos-status");
   const payload = {};
   for (const [role, field] of Object.entries(CHAOS_FIELD_ROLES)) {
-    const input = cardEl.querySelector(`[data-role="${role}"]`);
+    const input = qr(cardEl, role);
     const value = parseFloat(input.value);
     payload[field] = Number.isFinite(value) ? value : 0;
   }
@@ -715,33 +737,8 @@ function setActiveView(view) {
   }
 }
 
-// Mapeia uma lista de valores para pontos "x,y" de um <polyline>,
-// dentro da área de plotagem [x0,x1]×[y0,y1], normalizando pelo
-// min/max informado (ou pelo min/max da própria série, se omitido).
-// Achata a escala se hi==lo (série constante) pra não dividir por zero.
-function buildLinePoints(values, x0, x1, y0, y1, minVal, maxVal) {
-  const n = values.length;
-  let lo = minVal, hi = maxVal;
-  if (lo == null || hi == null) {
-    lo = Math.min(...values);
-    hi = Math.max(...values);
-  }
-  if (hi - lo < 1e-6) hi = lo + 1;
-  return values.map((v, i) => {
-    const x = n === 1 ? x0 : x0 + (i / (n - 1)) * (x1 - x0);
-    const y = y1 - ((v - lo) / (hi - lo)) * (y1 - y0);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-}
+// buildLinePoints e formatSecondsAgo agora vivem em pure.js.
 
-// "há quanto tempo" de um timestamp relativo ao último ponto da série
-// — usado nos rótulos do eixo X, pra dar noção real de escala temporal
-// em vez de um gráfico "flutuando" sem referência de tempo.
-function formatSecondsAgo(secondsAgo) {
-  if (secondsAgo < 5) return "agora";
-  const minAgo = secondsAgo / 60;
-  return minAgo < 1 ? `-${Math.round(secondsAgo)}s` : `-${Math.round(minAgo)}min`;
-}
 
 // Gráfico de histórico — 3 séries sobre uma grade legível: SoC (área
 // preenchida + linha, escala fixa 0–100% no eixo esquerdo), corrente
@@ -754,12 +751,12 @@ function formatSecondsAgo(secondsAgo) {
 // esquerda, corrente à direita, tempo embaixo) dão a régua que faltava
 // pra tirar um número aproximado só de olhar, sem precisar do legend.
 function renderHistoryChart(panel, samples) {
-  const svg = panel.querySelector('[data-role="history-svg"]');
-  const emptyMsg = panel.querySelector('[data-role="history-empty"]');
-  const nowSoc = panel.querySelector('[data-role="history-soc-now"]');
-  const nowAmps = panel.querySelector('[data-role="history-amps-now"]');
-  const nowOffered = panel.querySelector('[data-role="history-offered-now"]');
-  const windowLabel = panel.querySelector('[data-role="history-window"]');
+  const svg = qr(panel, "history-svg");
+  const emptyMsg = qr(panel, "history-empty");
+  const nowSoc = qr(panel, "history-soc-now");
+  const nowAmps = qr(panel, "history-amps-now");
+  const nowOffered = qr(panel, "history-offered-now");
+  const windowLabel = qr(panel, "history-window");
 
   if (!samples || samples.length < 2) {
     svg.innerHTML = "";
@@ -847,16 +844,7 @@ function renderHistoryChart(panel, samples) {
 }
 
 // ── Construção/atualização de cards (diff, não innerHTML) ───────────
-
-function displayStatus(c) {
-  return c.online ? c.status : "offline";
-}
-
-function buildFaultOptions(selected) {
-  return FAULT_CODES.map((f) =>
-    `<option value="${f}" ${f === selected ? "selected" : ""}>${f}</option>`
-  ).join("");
-}
+// displayStatus e buildFaultOptions agora vivem em pure.js.
 
 function createCard(c) {
   const el = document.createElement("div");
@@ -973,9 +961,9 @@ function createCard(c) {
     </div>`;
 
   const chargeId = c.charge_point_id;
-  const idTagInput = el.querySelector('[data-role="id-tag"]');
-  const faultSelect = el.querySelector('[data-role="fault-select"]');
-  const phasesSelect = el.querySelector('[data-role="phases-select"]');
+  const idTagInput = qr(el, "id-tag");
+  const faultSelect = qr(el, "fault-select");
+  const phasesSelect = qr(el, "phases-select");
   idTagInput.addEventListener("input", () => { idTagInputs[chargeId] = idTagInput.value; });
   faultSelect.addEventListener("change", () => { faultSelections[chargeId] = faultSelect.value; });
   // Aplica imediatamente ao trocar (sem botão "Aplicar" separado, ao
@@ -984,29 +972,29 @@ function createCard(c) {
   // não compensa. setPhases() já cuida do toast de sucesso/erro.
   phasesSelect.addEventListener("change", () => setPhases(chargeId, phasesSelect));
 
-  el.querySelector('[data-role="btn-start"]').addEventListener("click", () =>
+  qr(el, "btn-start").addEventListener("click", () =>
     sendCommand(chargeId, "start", [idTagInput.value]));
-  el.querySelector('[data-role="btn-stop"]').addEventListener("click", () =>
+  qr(el, "btn-stop").addEventListener("click", () =>
     sendCommand(chargeId, "stop", []));
-  el.querySelector('[data-role="btn-pause"]').addEventListener("click", () =>
+  qr(el, "btn-pause").addEventListener("click", () =>
     sendCommand(chargeId, "pause", []));
-  el.querySelector('[data-role="btn-resume"]').addEventListener("click", () =>
+  qr(el, "btn-resume").addEventListener("click", () =>
     sendCommand(chargeId, "resume", []));
-  el.querySelector('[data-role="btn-fault"]').addEventListener("click", () =>
+  qr(el, "btn-fault").addEventListener("click", () =>
     sendCommand(chargeId, "fault", [faultSelect.value]));
-  el.querySelector('[data-role="btn-clear"]').addEventListener("click", () =>
+  qr(el, "btn-clear").addEventListener("click", () =>
     sendCommand(chargeId, "clear", []));
-  el.querySelector('[data-role="btn-disconnect"]').addEventListener("click", () =>
+  qr(el, "btn-disconnect").addEventListener("click", () =>
     sendCommand(chargeId, "disconnect", []));
-  el.querySelector('[data-role="btn-remove"]').addEventListener("click", () =>
+  qr(el, "btn-remove").addEventListener("click", () =>
     removeCharger(chargeId));
 
-  el.querySelector('[data-role="history-toggle"]').addEventListener("click", () =>
+  qr(el, "history-toggle").addEventListener("click", () =>
     openHistoryView(chargeId));
 
-  el.querySelector('[data-role="chaos-toggle"]').addEventListener("click", () =>
+  qr(el, "chaos-toggle").addEventListener("click", () =>
     toggleChaosPanel(el));
-  el.querySelector('[data-role="chaos-apply"]').addEventListener("click", () =>
+  qr(el, "chaos-apply").addEventListener("click", () =>
     applyChaos(chargeId, el));
 
   updateCard(el, c);
@@ -1025,7 +1013,7 @@ function updateCard(el, c) {
   // reaplicar a cada snapshot, então é seguro sincronizar sempre.
   // Só pula enquanto o próprio select está focado, pra não fechar o
   // dropdown embaixo do dedo/mouse do usuário no meio de uma escolha.
-  const phasesSelect = el.querySelector('[data-role="phases-select"]');
+  const phasesSelect = qr(el, "phases-select");
   if (phasesSelect && document.activeElement !== phasesSelect) {
     phasesSelect.value = String(c.number_of_phases ?? 1);
   }
@@ -1037,10 +1025,10 @@ function updateCard(el, c) {
   el._chaosSnapshot = chaos;
   updateChaosIndicators(el, chaos);
 
-  const led = el.querySelector('[data-role="led"]');
+  const led = qr(el, "led");
   led.className = `led ${status}`;
 
-  const pill = el.querySelector('[data-role="pill"]');
+  const pill = qr(el, "pill");
   pill.className = `pill ${status}`;
   pill.textContent = c.online ? (STATUS_LABEL[c.status] || c.status) : "Offline";
 
@@ -1048,32 +1036,32 @@ function updateCard(el, c) {
   // teto de referência de 32A (AC monofásico/trifásico comum) — só
   // usado quando "charging" (as outras classes de status fixam sua
   // própria amplitude em CSS, ver .wave[data-status=...] .wave-path).
-  const wave = el.querySelector('[data-role="wave"]');
+  const wave = qr(el, "wave");
   wave.dataset.status = status;
   const ampRatio = Math.min(1, (c.actual_amps || 0) / 32);
   wave.querySelectorAll(".wave-path").forEach((p) => {
     p.style.setProperty("--wave-amp", (0.15 + ampRatio * 0.7).toFixed(2));
   });
 
-  const gauge = el.querySelector('[data-role="gauge"]');
+  const gauge = qr(el, "gauge");
   const cells = gauge.children;
   const filledCount = Math.round((c.soc_percent / 100) * 10);
   for (let i = 0; i < cells.length; i++) {
     const filled = i < filledCount;
     cells[i].className = "gauge-cell" + (filled ? " filled" : "") + (filled && status === "charging" ? " charging" : "");
   }
-  el.querySelector('[data-role="soc-value"]').textContent = `${c.soc_percent}%`;
+  qr(el, "soc-value").textContent = `${c.soc_percent}%`;
 
-  el.querySelector('[data-role="energy"]').textContent = `${(c.energy_wh / 1000).toFixed(2)} kWh`;
-  el.querySelector('[data-role="current"]').textContent = `${c.actual_amps}A / ${c.offered_amps}A`;
-  el.querySelector('[data-role="queue"]').textContent = String(c.queue_len);
+  qr(el, "energy").textContent = `${(c.energy_wh / 1000).toFixed(2)} kWh`;
+  qr(el, "current").textContent = `${c.actual_amps}A / ${c.offered_amps}A`;
+  qr(el, "queue").textContent = String(c.queue_len);
 
-  el.querySelector('[data-role="btn-start"]').disabled = hasTx;
-  el.querySelector('[data-role="btn-stop"]').disabled = !hasTx;
-  el.querySelector('[data-role="btn-pause"]').disabled = !(hasTx && !c.session_suspended);
-  el.querySelector('[data-role="btn-resume"]').disabled = !(hasTx && c.session_suspended);
-  el.querySelector('[data-role="btn-clear"]').disabled = status !== "faulted";
-  el.querySelector('[data-role="btn-disconnect"]').disabled = !c.online;
+  qr(el, "btn-start").disabled = hasTx;
+  qr(el, "btn-stop").disabled = !hasTx;
+  qr(el, "btn-pause").disabled = !(hasTx && !c.session_suspended);
+  qr(el, "btn-resume").disabled = !(hasTx && c.session_suspended);
+  qr(el, "btn-clear").disabled = status !== "faulted";
+  qr(el, "btn-disconnect").disabled = !c.online;
 
   const matchesFilter = !currentFilter || c.charge_point_id.toLowerCase().includes(currentFilter);
   el.style.display = matchesFilter ? "" : "none";
@@ -1085,6 +1073,22 @@ function renderEmptyState(hasFilterButNoMatch) {
   grid.innerHTML = hasFilterButNoMatch
     ? `<div class="empty"><strong>Nenhum charger corresponde ao filtro.</strong><span>Tente outro termo de busca.</span></div>`
     : `<div class="empty"><strong>Nenhum charger conectado.</strong><span>Digite um ID acima e clique em "+ Adicionar" para começar a simular.</span></div>`;
+}
+
+// Estado inicial, ANTES do 1º snapshot chegar (via refresh()/GET
+// /api/state ou o 1º evento do SSE, o que vier primeiro) — sem isso, a
+// tela ficava em branco por um instante e depois, se a frota realmente
+// estivesse vazia, mostrava o MESMO texto de renderEmptyState(false)
+// ("Nenhum charger conectado"): ambíguo entre "ainda não sei" e "sei
+// que não tem nenhum". syncGrid() (chamado pelo 1º refresh()/evento)
+// substitui isso pelo estado real assim que os dados chegam — não
+// precisa de nenhuma lógica extra de transição, o innerHTML é só
+// sobrescrito na próxima renderização, exatamente como já acontecia
+// entre renderEmptyState() e a grade populada.
+function renderLoadingState() {
+  const grid = document.getElementById("grid");
+  cardElements.clear();
+  grid.innerHTML = `<div class="empty empty-loading"><strong>Carregando frota…</strong><span>Conectando ao painel de controle.</span></div>`;
 }
 
 function updateStatsStrip(chargers) {
@@ -1101,23 +1105,10 @@ function updateStatsStrip(chargers) {
     <div class="stat stat-faulted"><span class="stat-value">${faulted}</span><span class="stat-label">Falha</span></div>`;
 }
 
-// Ordena conforme currentSort ("id" | "status" | "soc") — ID é sempre
-// o desempate, pra ordem estável entre re-renderizações.
-function sortChargers(chargers) {
-  const arr = [...chargers];
-  if (currentSort === "status") {
-    arr.sort((a, b) => {
-      const ra = a.online ? (STATUS_SORT_RANK[a.status] ?? 5) : 6;
-      const rb = b.online ? (STATUS_SORT_RANK[b.status] ?? 5) : 6;
-      return ra !== rb ? ra - rb : a.charge_point_id.localeCompare(b.charge_point_id);
-    });
-  } else if (currentSort === "soc") {
-    arr.sort((a, b) => b.soc_percent - a.soc_percent || a.charge_point_id.localeCompare(b.charge_point_id));
-  } else {
-    arr.sort((a, b) => a.charge_point_id.localeCompare(b.charge_point_id));
-  }
-  return arr;
-}
+// sortChargers agora vive em pure.js (default "id" lá é só pra uso
+// isolado em teste — aqui sempre passamos currentSort explicitamente,
+// ver syncGrid()).
+
 
 function syncGrid(chargers) {
   lastChargers = chargers;
@@ -1144,7 +1135,7 @@ function syncGrid(chargers) {
     grid.innerHTML = "";
   }
 
-  const sorted = sortChargers(chargers);
+  const sorted = sortChargers(chargers, currentSort);
   const seen = new Set();
   let anyVisible = false;
 
@@ -1284,13 +1275,13 @@ document.getElementById("history-next-btn").addEventListener("click", () => {
   selectHistoryCharger(next.value);
 });
 
-const bulkStartBtn = document.querySelector('[data-role="bulk-start"]');
-const bulkStopBtn = document.querySelector('[data-role="bulk-stop"]');
-const bulkPauseBtn = document.querySelector('[data-role="bulk-pause"]');
-const bulkResumeBtn = document.querySelector('[data-role="bulk-resume"]');
-const bulkDisconnectBtn = document.querySelector('[data-role="bulk-disconnect"]');
-const bulkFaultBtn = document.querySelector('[data-role="bulk-fault"]');
-const bulkClearBtn = document.querySelector('[data-role="bulk-clear"]');
+const bulkStartBtn = qr(document, "bulk-start");
+const bulkStopBtn = qr(document, "bulk-stop");
+const bulkPauseBtn = qr(document, "bulk-pause");
+const bulkResumeBtn = qr(document, "bulk-resume");
+const bulkDisconnectBtn = qr(document, "bulk-disconnect");
+const bulkFaultBtn = qr(document, "bulk-fault");
+const bulkClearBtn = qr(document, "bulk-clear");
 
 bulkStartBtn.addEventListener("click", () => {
   const idTag = document.getElementById("bulk-id-tag").value.trim() || "LOCAL_TAG";
@@ -1321,5 +1312,6 @@ bulkFaultBtn.addEventListener("click", () => {
 bulkClearBtn.addEventListener("click", () =>
   sendBulkCommand("clear", { button: bulkClearBtn }));
 
+renderLoadingState();  // esqueleto até o 1º snapshot chegar (ver acima)
 refresh();            // 1ª pintura imediata, antes do stream conectar
 connectEventStream(); // daqui pra frente, toda atualização vem por push
