@@ -173,8 +173,24 @@
     </div>
   </div>
 
+  <!-- Substitui window.prompt() nativo (usado antes só pro token de
+       acesso) — mesmo padrão visual do modal de confirmação acima, em
+       vez do diálogo cinza do sistema operacional, não estilizável e
+       que trava a thread principal. Ver promptDialog() em app.js. -->
+  <div class="modal-overlay" id="prompt-overlay" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="prompt-title">
+      <p id="prompt-title"></p>
+      <input type="text" id="prompt-input" class="modal-input" autocomplete="off" spellcheck="false">
+      <div class="modal-actions">
+        <button id="prompt-cancel">Cancelar</button>
+        <button id="prompt-ok" class="btn-primary">Salvar</button>
+      </div>
+    </div>
+  </div>
+
   <div class="toast-stack" id="toast-stack" aria-live="polite" aria-atomic="false"></div>
 
+  <script src="pure.js"></script>
   <script src="app.js"></script>
 </body>
 </html>
