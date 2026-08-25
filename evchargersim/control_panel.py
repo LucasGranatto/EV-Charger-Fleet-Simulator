@@ -77,12 +77,22 @@ FRONTEND_DIR = Path(__file__).parent / "frontend"
 
 # Whitelist explícita de arquivos servíveis — evita expor o diretório
 # inteiro (ou qualquer coisa fora dele via "..") por engano; só estes
-# três arquivos, nada mais, é intencional.
+# arquivos, nada mais, é intencional. pure.js precisa estar aqui porque
+# index.html o carrega via <script src="pure.js"> ANTES de app.js — sem
+# essa entrada, a requisição cai no 404 genérico (JSON, não executável
+# como script), FAULT_CODES/sortChargers/etc. ficam indefinidos, e a
+# 1ª referência a eles em app.js (nível de módulo, perto do fim do
+# arquivo) lança ReferenceError — interrompendo o resto do script
+# ANTES de chegar em refresh()/connectEventStream() nas últimas linhas.
+# Efeito prático: o painel nunca busca o snapshot inicial nem abre o
+# SSE, então nenhum charger aparece no dashboard, independente de
+# estar de fato conectado no CSMS ou não.
 _STATIC_FILES = {
     "/": "index.html",
     "/index.html": "index.html",
     "/style.css": "style.css",
     "/app.js": "app.js",
+    "/pure.js": "pure.js",
 }
 
 # ── Server-Sent Events (/api/events) ─────────────────────────────────
