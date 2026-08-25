@@ -10,9 +10,24 @@ testar isoladamente (ver test_evchargersim.py).
 import math
 import random
 
+# Ruído relativo de tensão de rede — ±0.65% do nominal (equivale a
+# ±1.5V pros ~230V fase-neutro comuns na Europa/Brasil, mas agora ESCALA
+# com nominal_voltage em vez de ser um valor absoluto fixo. Um ±1.5V
+# fixo é ruído desprezível (~0.65%) pra 230V, mas passaria a representar
+# uma flutuação relativa bem maior/menor em tensões bem diferentes (ex:
+# 120V split-phase americano ou 400V trifásico linha-linha) — não
+# refletindo a mesma qualidade de rede em todos os casos.
+_VOLTAGE_JITTER_RATIO = 0.0065
+
+
 def read_grid_voltage(nominal_voltage: float) -> float:
-    """Simula pequena flutuação natural da tensão de rede (~±1.5V)."""
-    return round(nominal_voltage + random.uniform(-1.5, 1.5), 1)
+    """
+    Simula pequena flutuação natural da tensão de rede — proporcional a
+    `nominal_voltage` (±0.65%), não um valor absoluto fixo, pra manter a
+    mesma qualidade de rede simulada independente da tensão configurada.
+    """
+    jitter = nominal_voltage * _VOLTAGE_JITTER_RATIO
+    return round(nominal_voltage + random.uniform(-jitter, jitter), 1)
 
 
 # Parâmetros da curva logística de tapering — ver compute_actual_current().
