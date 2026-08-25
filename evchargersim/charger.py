@@ -2054,6 +2054,7 @@ class EVChargerSim(BaseChargePoint):
             "actual_amps": state.current_actual_amps,
             "offered_amps": state.current_offered_amps,
             "power_kw": power_kw,
+            "energy_kwh": energy_kwh,
         })
         overflow = len(state.history) - _HISTORY_MAX_SAMPLES
         if overflow > 0:
