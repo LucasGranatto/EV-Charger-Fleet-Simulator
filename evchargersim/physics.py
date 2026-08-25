@@ -7,6 +7,7 @@ Propositalmente sem dependência de ChargerState/EVChargerSim — fácil de
 testar isoladamente (ver test_evchargersim.py).
 """
 
+import math
 import random
 
 def read_grid_voltage(nominal_voltage: float) -> float:
@@ -14,6 +15,15 @@ def read_grid_voltage(nominal_voltage: float) -> float:
     return round(nominal_voltage + random.uniform(-1.5, 1.5), 1)
 
 
+# Parâmetros da curva logística de tapering — ver compute_actual_current().
+# Escolhidos pra aproximar os mesmos pontos de referência do tapering
+# antigo em degraus (≈0.97 abaixo de 80%, ≈0.75 perto de 90%, ≈0.45
+# perto de 93-95%, ≈0.15 acima de 97%), só que como uma curva contínua
+# em vez de saltos instantâneos.
+_TAPER_MAX_FACTOR = 0.97   # fator com a bateria "fria" (SoC baixo/médio)
+_TAPER_MIN_FACTOR = 0.12   # fator no fim da carga (SoC ~100%)
+_TAPER_MIDPOINT_SOC = 91.0  # SoC onde a curva está na metade do caminho
+_TAPER_STEEPNESS = 0.28    # quão abrupta é a transição em torno do midpoint
 
 
 def compute_actual_current(offered_amps: float, soc_percent: float) -> float:
@@ -26,20 +36,21 @@ def compute_actual_current(offered_amps: float, soc_percent: float) -> float:
     fica perceptível perto do fim (SoC alto), quando o carregador de
     bordo do veículo reduz a corrente para proteger a bateria.
 
+    O fator de tapering é uma curva logística contínua em função do SoC
+    (não mais degraus fixos) — um carregador de bordo real reduz a
+    corrente suavemente conforme a bateria se aproxima da carga plena,
+    nunca em saltos instantâneos. Além de mais realista fisicamente,
+    isso evita descontinuidades verticais no gráfico de histórico do
+    painel (SoC/corrente ao longo do tempo).
+
     Função pura (sem estado global/de instância) de propósito — fácil de
     testar isoladamente com unittest, sem precisar montar um EVChargerSim
     inteiro. Ver test_evchargersim.py.
     """
     if offered_amps <= 0:
         return 0.0
-    if soc_percent < 80:
-        factor = 0.97  # praticamente o limite oferecido inteiro
-    elif soc_percent < 90:
-        factor = 0.75
-    elif soc_percent < 97:
-        factor = 0.45
-    else:
-        factor = 0.15  # últimos % da bateria, corrente bem reduzida
+    exponent = _TAPER_STEEPNESS * (soc_percent - _TAPER_MIDPOINT_SOC)
+    factor = _TAPER_MIN_FACTOR + (_TAPER_MAX_FACTOR - _TAPER_MIN_FACTOR) / (1 + math.exp(exponent))
     return round(offered_amps * factor, 1)
 
 
