@@ -59,6 +59,7 @@ só a API em si; a página em si não expõe nada sensível.
 """
 
 import asyncio
+import hmac
 import json
 import logging
 import mimetypes
@@ -232,7 +233,17 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
         def _is_authorized(self):
             if not control_token:
                 return True
-            return self._extract_token() == control_token
+            # hmac.compare_digest em vez de "==" — comparação de string
+            # normal para no primeiro byte diferente, o que vaza timing
+            # (quanto mais prefixo o atacante acerta, mais devagar a
+            # resposta chega) e permite adivinhar o token byte a byte
+            # com medições repetidas. compare_digest roda em tempo
+            # constante independente de onde a diferença está.
+            # compare_digest exige str/bytes dos dois lados — token
+            # ausente vira "" em vez de None pra não estourar TypeError
+            # (e "" nunca bate com um control_token não-vazio de verdade).
+            token = self._extract_token() or ""
+            return hmac.compare_digest(token, control_token)
 
         def _reject_unauthorized(self):
             self._send_json({"error": "unauthorized — token ausente ou inválido"}, status=401)
