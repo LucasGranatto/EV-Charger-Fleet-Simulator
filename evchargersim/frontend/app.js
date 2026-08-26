@@ -25,6 +25,10 @@ const faultSelections = {};
 
 let currentFilter = "";
 let currentSort = "id";
+// "cards" (padrão, 1 card por charger com todos os controles) ou
+// "table" (1 linha por charger, só telemetria — pensado pra escanear
+// dezenas/centenas de chargers de uma vez; ver renderTable()).
+let viewMode = "cards";
 // Último snapshot recebido (via SSE ou refresh()) — guardado pra poder
 // reordenar (mudar currentSort) instantaneamente, sem esperar o
 // próximo evento do stream.
@@ -377,6 +381,15 @@ async function removeCharger(chargeId) {
 // ações da bulk-actions-row devem afetar. Card escondido (display:none,
 // ver updateCard) não entra.
 function visibleChargerIds() {
+  // Em modo tabela, cardElements não é mais atualizado a cada snapshot
+  // (ver o branch `viewMode === "table"` em syncGrid) — usar o filtro
+  // direto sobre lastChargers evita que ações em massa apliquem num
+  // conjunto de IDs desatualizado, congelado de antes de trocar de modo.
+  if (viewMode === "table") {
+    return lastChargers
+      .filter((c) => !currentFilter || c.charge_point_id.toLowerCase().includes(currentFilter))
+      .map((c) => c.charge_point_id);
+  }
   const ids = [];
   for (const [id, el] of cardElements) {
     if (el.style.display !== "none") ids.push(id);
@@ -1071,8 +1084,72 @@ function renderEmptyState(hasFilterButNoMatch) {
   const grid = document.getElementById("grid");
   cardElements.clear();
   grid.innerHTML = hasFilterButNoMatch
-    ? `<div class="empty"><strong>Nenhum charger corresponde ao filtro.</strong><span>Tente outro termo de busca.</span></div>`
-    : `<div class="empty"><strong>Nenhum charger conectado.</strong><span>Digite um ID acima e clique em "+ Adicionar" para começar a simular.</span></div>`;
+    ? `<div class="empty">
+         <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M13 2 L5 18 H13 L11 30 L27 12 H17 L19 2 Z" /></svg>
+         <strong>Nenhum charger corresponde ao filtro.</strong>
+         <span>Tente outro termo de busca.</span>
+       </div>`
+    : `<div class="empty">
+         <svg class="empty-mark" viewBox="0 0 32 32" aria-hidden="true"><path d="M13 2 L5 18 H13 L11 30 L27 12 H17 L19 2 Z" /></svg>
+         <strong>Nenhum charger conectado.</strong>
+         <span>Digite um ID acima e clique em "+ Adicionar" para começar a simular.</span>
+       </div>`;
+}
+
+function renderTable(chargers) {
+  const tbody = document.getElementById("dense-table-body");
+  const filtered = chargers.filter(
+    (c) => !currentFilter || c.charge_point_id.toLowerCase().includes(currentFilter)
+  );
+  if (filtered.length === 0) {
+    const msg = currentFilter
+      ? "Nenhum charger corresponde ao filtro."
+      : "Nenhum charger conectado.";
+    tbody.innerHTML = `<tr class="empty-row"><td colspan="7">${escapeHtml(msg)}</td></tr>`;
+    return;
+  }
+
+  const sorted = sortChargers(filtered, currentSort);
+  tbody.innerHTML = sorted.map((c) => {
+    const status = displayStatus(c);
+    const label = c.online ? (STATUS_LABEL[c.status] || c.status) : "Offline";
+    return `
+      <tr data-id="${escapeAttr(c.charge_point_id)}">
+        <td><span class="led ${status}"></span></td>
+        <td class="dt-id">${escapeHtml(c.charge_point_id)}</td>
+        <td><span class="pill ${status}">${escapeHtml(label)}</span></td>
+        <td class="dt-num">${c.soc_percent}%</td>
+        <td class="dt-num">${c.actual_amps}A / ${c.offered_amps}A</td>
+        <td class="dt-num">${(c.energy_wh / 1000).toFixed(2)} kWh</td>
+        <td class="dt-num">${c.queue_len}</td>
+      </tr>`;
+  }).join("");
+
+  // Clicar na linha filtra pelo ID exato e volta pro modo card — a
+  // tabela é pra escanear/localizar, não pra agir (não duplica os
+  // botões de start/stop/fault/etc. de createCard aqui).
+  tbody.querySelectorAll("tr[data-id]").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.id;
+      document.getElementById("search-input").value = id;
+      currentFilter = id.toLowerCase();
+      applyViewMode("cards");
+    });
+  });
+}
+
+// Alterna entre modo card (padrão, detalhado, ideal até ~20 chargers)
+// e modo tabela (1 linha por charger, só telemetria — pra escanear uma
+// frota grande sem ter que rolar dezenas de cards). #grid usa o
+// atributo `hidden` normal do HTML; ver `#grid[hidden]` em style.css
+// (precisa de override explícito porque a regra de ID `#grid { display:
+// grid }` tem especificidade maior que o `[hidden] { display: none }`
+// padrão do navegador).
+function applyViewMode(mode) {
+  viewMode = mode;
+  document.getElementById("view-mode-cards").classList.toggle("active", mode === "cards");
+  document.getElementById("view-mode-table").classList.toggle("active", mode === "table");
+  syncGrid(lastChargers);
 }
 
 // Estado inicial, ANTES do 1º snapshot chegar (via refresh()/GET
@@ -1127,6 +1204,11 @@ function syncGrid(chargers) {
 
   const grid = document.getElementById("grid");
   if (chargers.length === 0) {
+    // Frota vazia: sempre mostra o empty-state no #grid, mesmo em modo
+    // tabela — não faria sentido mostrar uma tabela com só cabeçalho;
+    // a mensagem de "como adicionar" é mais útil que linhas vazias.
+    grid.hidden = false;
+    document.getElementById("dense-table-wrap").hidden = true;
     renderEmptyState(false);
     updateBulkCountLabel();
     return;
@@ -1134,6 +1216,21 @@ function syncGrid(chargers) {
   if (grid.querySelector(".empty")) {
     grid.innerHTML = "";
   }
+
+  // Modo tabela: rebuild simples e direto (ver renderTable) em vez do
+  // diffing de cards abaixo — não precisa manter/animar 300 elementos
+  // de card fora de tela só pra escanear status de uma frota grande.
+  // Os cards continuam intactos em cardElements, prontos assim que o
+  // usuário volta pro modo card (ver applyViewMode).
+  if (viewMode === "table") {
+    grid.hidden = true;
+    document.getElementById("dense-table-wrap").hidden = false;
+    renderTable(chargers);
+    updateBulkCountLabel();
+    return;
+  }
+  grid.hidden = false;
+  document.getElementById("dense-table-wrap").hidden = true;
 
   const sorted = sortChargers(chargers, currentSort);
   const seen = new Set();
@@ -1240,8 +1337,12 @@ document.getElementById("add-advanced-toggle").addEventListener("click", () => {
 });
 document.getElementById("search-input").addEventListener("input", (e) => {
   currentFilter = e.target.value.trim().toLowerCase();
-  for (const [id, el] of cardElements) {
-    el.style.display = (!currentFilter || id.toLowerCase().includes(currentFilter)) ? "" : "none";
+  if (viewMode === "table") {
+    renderTable(lastChargers);
+  } else {
+    for (const [id, el] of cardElements) {
+      el.style.display = (!currentFilter || id.toLowerCase().includes(currentFilter)) ? "" : "none";
+    }
   }
   updateBulkCountLabel();
 });
@@ -1249,6 +1350,8 @@ document.getElementById("sort-select").addEventListener("change", (e) => {
   currentSort = e.target.value;
   syncGrid(lastChargers); // reordena na hora, sem esperar o próximo evento do SSE
 });
+document.getElementById("view-mode-cards").addEventListener("click", () => applyViewMode("cards"));
+document.getElementById("view-mode-table").addEventListener("click", () => applyViewMode("table"));
 document.getElementById("token-btn").addEventListener("click", promptForToken);
 document.getElementById("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
 
