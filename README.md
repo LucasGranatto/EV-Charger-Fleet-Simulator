@@ -153,7 +153,17 @@ python -m evchargersim --control-token "um-segredo-qualquer" --url ws://seu-csms
 
 No navegador, clique no 🔒 no topo do painel e cole o token — ele fica
 salvo no `localStorage` da aba. Os arquivos estáticos (`/`, `/app.js`,
-`/style.css`) nunca exigem token; só a API.
+`/pure.js`, `/style.css`) nunca exigem token; só a API.
+
+**Aviso:** requests via `GET`/SSE (inclusive `/api/events`) mandam o
+token pela querystring (`?token=...`), não por header — o `EventSource`
+do navegador não consegue mandar headers customizados, então não tem
+como evitar isso pra esse endpoint em particular. Na prática isso
+significa que o token pode acabar em access logs de qualquer proxy/load
+balancer na frente do painel. Se for expor o painel além de uma rede
+confiável/localhost, rode atrás de TLS e restrinja quem lê esses logs
+— o `--control-token` protege contra acesso casual, não substitui uma
+rede fechada.
 
 ## Encerramento gracioso
 
@@ -193,6 +203,35 @@ Todos podem ser configurados por charger individual em modo frota (via
 `POST /api/chargers`, mesma whitelist de `battery_capacity_wh`/
 `nominal_voltage` — útil pra simular uma frota com chargers de
 capacidades físicas diferentes, ex: alguns 16A, outros 32A).
+
+### Fator de potência e componente reativa
+
+```bash
+python -m evchargersim --power-factor 0.95 --url ws://seu-csms:9001
+```
+
+`--power-factor` (padrão: `1.0`) simula uma carga com componente
+reativa — um carregador de bordo real raramente tem FP unitário
+(tipicamente 0.9–0.99, por causa do estágio de retificação/PFC do
+conversor AC-DC interno). Com o padrão `1.0` nada muda em relação a
+antes deste flag existir (carga puramente resistiva). Abaixo de `1.0`:
+
+- A potência/energia **ativa** reportada (`Power.Active.Import`,
+  `Energy.Active.Import.Register`, e portanto o ritmo de subida do SoC)
+  cai na mesma proporção do fator de potência.
+- `MeterValues` passa a incluir também `Power.Reactive.Import` (em
+  `var`), calculada a partir do mesmo triângulo de potências
+  (`Q = S × √(1 − FP²)`, onde `S` é a potência aparente `fases × V × I`)
+  — útil pra testar um CSMS que valida ou registra a componente
+  reativa.
+- A conversão W↔A de **limites de carregamento**
+  (`GetCompositeSchedule`, `SetChargingProfile` em W) continua baseada
+  em potência **aparente**, sem levar o fator de potência em conta —
+  é assim que um CSMS real calcula esse limite, sem saber de antemão o
+  FP da carga que vai conectar.
+
+Também configurável por charger individual em modo frota, mesma
+whitelist de `nominal_voltage`/`number_of_phases`.
 
 `GetConfiguration` também passou a expor as 4 chaves padrão OCPP 1.6 de
 capacidade do feature profile `SmartCharging`
@@ -409,7 +448,58 @@ depois de uma queda simulada por `--chaos-disconnect-interval`:
   andamento — respondem `NotImplemented`, a resposta que a spec já
   prevê pra isso.
 
-## Notas da revisão de Smart Charging e limites físicos
+## Notas da revisão de física, segurança e histórico
+
+**Física** (`physics.py`)
+
+- **Tapering de SoC virou curva contínua** — `compute_actual_current`
+  usava degraus fixos (0.97/0.75/0.45/0.15 em 80/90/97% de SoC), o que
+  criava saltos verticais instantâneos no gráfico de histórico e não
+  reflete como um carregador de bordo real reduz corrente (suavemente,
+  não em degraus). Agora é uma curva logística contínua com o mesmo
+  formato geral (quase o limite oferecido até ~80%, afinando perto de
+  100%), sem descontinuidades.
+- **Ruído de tensão de rede escalado com `nominal_voltage`** —
+  `read_grid_voltage` usava um ruído absoluto fixo (±1.5V) independente
+  da tensão configurada; um ±1.5V é ruído desprezível a 230V mas
+  desproporcional a tensões bem diferentes (120V split-phase, 400V
+  trifásico). Agora é ±0.65% relativo à tensão nominal, mantendo a
+  mesma amplitude de antes no caso comum (~230V).
+
+**Segurança**
+
+- **Comparação do `--control-token` não era constant-time** —
+  `_is_authorized` usava `==` numa string, que vaza timing (a
+  comparação para no primeiro byte diferente, permitindo em teoria
+  adivinhar o token byte a byte por medição repetida). Trocado por
+  `hmac.compare_digest`.
+
+**Backend**
+
+- **Task de expiração de `ReserveNow` órfã** — `_expire_reservation_at`
+  era disparada via `create_task` solto, sem referência guardada em
+  lugar nenhum; um `CancelReservation` ou a remoção do charger pelo
+  painel não cancelavam essa task, que ficava dormindo (às vezes por
+  horas, até o `expiryDate` original) referenciando uma instância já
+  removida. Agora a task é rastreada em `self._reservation_task` e
+  cancelada explicitamente nos dois casos.
+- **`energy_kwh` descartado no histórico** — `_record_history_sample`
+  recebia `energy_kwh` já calculado e simplesmente não gravava no dict
+  de amostra; agora fica disponível junto com as outras métricas por
+  amostra (`GET /api/history/<id>`).
+- **`pure.js` ausente da whitelist de arquivos estáticos** —
+  `control_panel.py` servia só `/`, `/index.html`, `/style.css` e
+  `/app.js`; depois que a lógica sem DOM de `app.js` foi extraída pra
+  `pure.js` (ver nota de testes mais abaixo), o `<script src="pure.js">`
+  de `index.html` passou a voltar 404. Como a 1ª referência a uma
+  função de `pure.js` em `app.js` fica perto do fim do arquivo, o
+  script inteiro travava antes de chegar em `refresh()`/
+  `connectEventStream()` — o painel nunca buscava o snapshot inicial
+  nem abria o SSE, então nenhum charger aparecia, independente de
+  estar de fato conectado no CSMS. `/pure.js` foi adicionado à
+  whitelist.
+
+
 
 Ver [Limites físicos e Smart Charging](#limites-físicos-e-smart-charging)
 acima para o uso. Resumo do que mudou:
