@@ -38,6 +38,7 @@ CHARGER_OVERRIDE_FIELDS = frozenset({
     "initial_soc_percent",
     "nominal_voltage",
     "number_of_phases",
+    "power_factor",
     "hardware_max_amps",
     "max_schedule_periods",
     "max_tx_profiles",
@@ -88,6 +89,23 @@ class SimConfig:
     # "lenta" mesmo após o limite subir, porque o simulador só
     # computava 1/3 (ou 1/número de fases real) da potência esperada.
     number_of_phases: int = 1
+
+    # Fator de potência da carga simulada — 1.0 (padrão) mantém o
+    # comportamento anterior (carga puramente resistiva, sem componente
+    # reativa). MeterValues antes só reportava Power.Active.Import =
+    # number_of_phases × nominal_voltage × amps, ou seja, sempre
+    # assumindo FP=1 — um carregador de bordo real tem FP tipicamente
+    # entre 0.9 e 0.99 (não unitário) por causa da retificação/PFC do
+    # conversor AC-DC interno. Com power_factor < 1.0, a potência ATIVA
+    # reportada (e a energia acumulada, que é sempre ativa/real) cai na
+    # mesma proporção, e o simulador passa a reportar também
+    # Power.Reactive.Import (var) — útil pra testar um CSMS que valida
+    # ou registra a componente reativa. NÃO afeta a conversão W↔A de
+    # limites de carregamento (GetCompositeSchedule, SetChargingProfile
+    # em W) — essa conversão é sempre baseada em potência APARENTE
+    # (V×I×fases), do mesmo jeito que um CSMS real calcula, sem saber de
+    # antemão o FP da carga que vai conectar.
+    power_factor: float = 1.0
 
     # ── Limites físicos do hardware — sem isso, o simulador deixava
     # aplicar qualquer corrente que o CSMS pedisse via SetChargingProfile,
@@ -208,6 +226,7 @@ class SimConfig:
             "initial_soc_percent": args.initial_soc,
             "nominal_voltage": args.voltage,
             "number_of_phases": args.phases,
+            "power_factor": args.power_factor,
             "hardware_max_amps": args.hardware_max_amps,
             "max_schedule_periods": args.max_schedule_periods,
             "max_tx_profiles": args.max_tx_profiles,
@@ -267,6 +286,11 @@ def _parse_args(argv=None):
     parser.add_argument("--phases", type=int, default=None, choices=[1, 2, 3],
                          help="Número de fases do charger simulado — afeta todo cálculo de "
                               "potência (padrão: 1 = monofásico; use 3 para trifásico).")
+    parser.add_argument("--power-factor", type=float, default=None,
+                         help="Fator de potência da carga simulada, entre 0 e 1 (padrão: 1.0 "
+                              "= puramente resistivo, sem componente reativa). Valores "
+                              "abaixo de 1.0 reduzem a potência/energia ATIVA reportada e "
+                              "fazem o simulador passar a reportar Power.Reactive.Import.")
     parser.add_argument("--hardware-max-amps", type=float, default=None,
                          help="Teto físico de corrente deste charger (fiação/breaker) — "
                               "anunciado via GetConfiguration (chave CurrentMax) e "

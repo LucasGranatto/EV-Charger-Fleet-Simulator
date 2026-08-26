@@ -9,6 +9,7 @@ comando compartilhada com o painel web de controle (modo frota).
 
 import asyncio
 import logging
+import math
 import random
 import sys
 from datetime import datetime, timezone
@@ -180,6 +181,18 @@ class EVChargerSim(BaseChargePoint):
         # _flush_offline_queue.
         self._flush_in_progress: bool = False
 
+        # Task de _expire_reservation_at em voo (None se não há reserva
+        # ativa) — guardada aqui pra poder ser cancelada explicitamente
+        # em on_cancel_reservation e na remoção do charger pelo painel
+        # (orchestrator.remove()). Sem isso a task ficava órfã: criada
+        # via create_task solto em on_reserve_now, sem ninguém segurando
+        # a referência, então nada cancelava o asyncio.sleep(delay) dela
+        # (que pode durar minutos/horas até expiry_date) se a reserva
+        # fosse cancelada antes ou se o charger inteiro fosse removido
+        # nesse meio-tempo — a task continuava viva, dormindo, referenciando
+        # um `self` já removido do registry/conexão já fechada.
+        self._reservation_task: asyncio.Task | None = None
+
     def _try_begin_start(self) -> bool:
         """
         Tenta reservar "iniciando sessão" de forma atômica (sem await
@@ -225,6 +238,37 @@ class EVChargerSim(BaseChargePoint):
         """
         v = self.config.nominal_voltage if voltage is None else voltage
         return self.config.number_of_phases * v * amps
+
+    def _active_power_w(self, amps: float, voltage: float | None = None) -> float:
+        """
+        Potência ATIVA (W) — a que um medidor de energia real mede e a
+        que efetivamente carrega a bateria. É _power_w() (potência
+        APARENTE, S = fases × V × I) escalada por config.power_factor.
+        Usada SÓ onde o valor precisa representar energia/potência real
+        entregue: acumulador de energia, MeterValues Power.Active.Import
+        e o histórico/log do painel. NÃO usar para conversão de limites
+        de carregamento (GetCompositeSchedule/SetChargingProfile em W) —
+        essas continuam em cima de _power_w() (apparent), porque é assim
+        que o CSMS calcula o limite em W a partir de A, sem saber de
+        antemão o FP da carga que vai conectar (ver _limit_to_amps).
+        Com power_factor=1.0 (padrão) o valor é idêntico a _power_w().
+        """
+        return self._power_w(amps, voltage) * self.config.power_factor
+
+    def _reactive_power_var(self, amps: float, voltage: float | None = None) -> float:
+        """
+        Potência REATIVA (var) correspondente ao mesmo triângulo de
+        potências de _active_power_w(): Q = S × sqrt(1 - FP²), onde
+        S é a potência aparente (_power_w). Com power_factor=1.0
+        (padrão) dá sempre 0 — carga puramente resistiva, sem
+        componente reativa, igual ao comportamento anterior a este
+        campo existir. max(0, ...) protege contra um --power-factor
+        configurado fora do intervalo físico válido (>1.0), que senão
+        cairia numa raiz de número negativo.
+        """
+        pf = self.config.power_factor
+        apparent = self._power_w(amps, voltage)
+        return apparent * math.sqrt(max(0.0, 1.0 - pf * pf))
 
     def _limit_to_amps(self, limit: float, unit: str) -> float:
         """
@@ -1472,7 +1516,16 @@ class EVChargerSim(BaseChargePoint):
         state.reserved_for_id_tag = id_tag
         state.reserved_parent_id_tag = parent_id_tag
         asyncio.create_task(self.send_status_notification(ChargePointStatus.reserved))
-        asyncio.create_task(self._expire_reservation_at(reservation_id, expiry_date))
+        # Guard defensivo: o bloco de "occupied" acima já impede duas
+        # reservas simultâneas no fluxo normal, mas se algo escapar
+        # (ex.: CancelReservation + ReserveNow disparando no mesmo
+        # ciclo) não queremos duas tasks de expiração pendentes ao
+        # mesmo tempo — cancela qualquer resquício antes de criar a nova.
+        if self._reservation_task is not None:
+            self._reservation_task.cancel()
+        self._reservation_task = asyncio.create_task(
+            self._expire_reservation_at(reservation_id, expiry_date)
+        )
         return call_result.ReserveNow(status=ReservationStatus.accepted)
 
     async def _expire_reservation_at(self, reservation_id: int, expiry_date: str):
@@ -1500,6 +1553,7 @@ class EVChargerSim(BaseChargePoint):
             state.reservation_id = None
             state.reserved_for_id_tag = None
             state.reserved_parent_id_tag = None
+            self._reservation_task = None
             if state.active_transaction_id is None and not state.is_faulted:
                 await self.send_status_notification(ChargePointStatus.available)
 
@@ -1513,6 +1567,14 @@ class EVChargerSim(BaseChargePoint):
         state.reservation_id = None
         state.reserved_for_id_tag = None
         state.reserved_parent_id_tag = None
+        # CancelReservation explícito — a task de expiração automática
+        # não tem mais motivo pra existir, cancela em vez de deixá-la
+        # dormindo até expiry_date só pra acordar e não fazer nada
+        # (o guard `state.reservation_id == reservation_id` dentro dela
+        # já cobriria isso, mas não há razão pra manter a task viva).
+        if self._reservation_task is not None:
+            self._reservation_task.cancel()
+            self._reservation_task = None
         if state.active_transaction_id is None and not state.is_faulted:
             asyncio.create_task(self.send_status_notification(ChargePointStatus.available))
         return call_result.CancelReservation(status=CancelReservationStatus.accepted)
@@ -1931,7 +1993,7 @@ class EVChargerSim(BaseChargePoint):
                 if state.session_suspended or state.current_actual_amps <= 0:
                     continue
 
-                power_w = self._power_w(state.current_actual_amps)
+                power_w = self._active_power_w(state.current_actual_amps)
                 energy_delta_wh = (
                     power_w * (interval_seconds / 3600) * self.config.simulation_speed
                 )
@@ -2021,10 +2083,20 @@ class EVChargerSim(BaseChargePoint):
                             "unit": "V",
                         },
                         {
-                            "value": str(round(self._power_w(state.current_actual_amps, voltage_now), 1)),
+                            "value": str(round(self._active_power_w(state.current_actual_amps, voltage_now), 1)),
                             "context": "Sample.Periodic",
                             "measurand": "Power.Active.Import",
                             "unit": "W",
+                        },
+                        {
+                            # Só passa a ser != 0 quando config.power_factor < 1.0
+                            # — com o padrão (FP=1.0, carga puramente resistiva)
+                            # sempre reporta 0var, mesmo comportamento de antes
+                            # deste measurand existir.
+                            "value": str(round(self._reactive_power_var(state.current_actual_amps, voltage_now), 1)),
+                            "context": "Sample.Periodic",
+                            "measurand": "Power.Reactive.Import",
+                            "unit": "var",
                         },
                         {
                             "value": str(int(state.energy_meter_wh)),
@@ -2082,7 +2154,7 @@ class EVChargerSim(BaseChargePoint):
                     self._build_meter_values_request(voltage_now), kind="MeterValues"
                 )
 
-                power_kw = round(self._power_w(state.current_actual_amps, voltage_now) / 1000, 2)
+                power_kw = round(self._active_power_w(state.current_actual_amps, voltage_now) / 1000, 2)
                 energy_kwh = round(state.energy_meter_wh / 1000, 2)
                 self._record_history_sample(power_kw, energy_kwh)
 
