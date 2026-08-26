@@ -408,6 +408,18 @@ async def main(argv=None):
         # registry.
         cp = registry.pop(charge_point_id, None)
 
+        # Cancela a task de expiração de reserva em voo, se houver — ela
+        # é criada solta (create_task) dentro de EVChargerSim.on_reserve_now
+        # e não faz parte da árvore de tasks que `task.cancel()` (a task
+        # deste run_charger_lifecycle) alcança mais abaixo. Sem isso, uma
+        # reserva pendente no momento da remoção deixava um
+        # asyncio.sleep(delay) órfão rodando até o expiry_date original
+        # (minutos/horas depois), referenciando uma instância cp já fora
+        # do registry e com a conexão prestes a fechar.
+        if cp is not None and cp._reservation_task is not None:
+            cp._reservation_task.cancel()
+            cp._reservation_task = None
+
         # Encerramento gracioso: se há sessão ATIVA (ou um START em
         # voo) e o charger está ONLINE, encerra a sessão no CSMS ANTES
         # de cancelar a task. Faltava por completo — remover pelo
