@@ -550,6 +550,109 @@ svg { fill: currentColor; }
   grid-template-columns: repeat(auto-fill, minmax(310px, 1fr));
   gap: 14px;
 }
+/* A regra por ID acima tem especificidade maior que o `[hidden] {
+   display: none }` padrão do navegador (mesmo padrão já usado em
+   .modal-overlay[hidden] mais abaixo) — sem este override, o atributo
+   `hidden` setado por applyViewMode() em app.js não escondia a grade
+   de cards ao trocar pro modo tabela. */
+#grid[hidden] { display: none; }
+
+/* ── Tabela densa (modo alternativo pra frota grande) ─────────────
+   Card é o modo padrão (ideal até ~20 chargers, mostra tudo de um só
+   já com controles); esta é a visão de varredura pra dezenas/centenas
+   — 1 linha por charger, só telemetria, sem duplicar os botões de
+   ação de createCard(). Clicar numa linha filtra pelo ID e volta pro
+   modo card, já mostrando só aquele charger pronto pra agir. Reusa
+   .led/.pill (mesmas classes de status do card, ver updateCard) —
+   nenhuma cor nova, mesma linguagem de sinalização em todo o painel. */
+.dense-table-wrap {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: auto;
+  max-height: calc(100vh - 260px);
+}
+
+.dense-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.dense-table thead {
+  position: sticky;
+  top: 0;
+  background: var(--surface-raised);
+  z-index: 1;
+}
+
+.dense-table th {
+  text-align: left;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+  color: var(--text-faint);
+  font-weight: 600;
+  padding: 9px 12px;
+  border-bottom: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+.dense-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--border-soft);
+  white-space: nowrap;
+}
+
+.dense-table tbody tr {
+  cursor: pointer;
+}
+.dense-table tbody tr:hover { background: var(--surface-hover); }
+
+.dense-table .led { position: static; margin: 0; }
+
+.dense-table .dt-id {
+  font-family: var(--font-mono);
+  color: var(--text);
+}
+
+.dense-table .dt-num {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+  color: var(--text-dim);
+}
+
+.dense-table .empty-row td {
+  text-align: center;
+  padding: 40px 12px;
+  color: var(--text-dim);
+  cursor: default;
+}
+.dense-table .empty-row:hover { background: none; }
+
+/* ── Toggle de modo de visualização (cards/tabela) ────────────────── */
+.view-mode-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  flex-shrink: 0;
+}
+.view-mode-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: none;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text-faint);
+}
+.view-mode-btn svg { width: 14px; height: 14px; }
+.view-mode-btn + .view-mode-btn { border-left: 1px solid var(--border); }
+.view-mode-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
+.view-mode-btn.active { background: var(--accent-dim); color: var(--accent); }
 
 .card {
   background: var(--surface);
@@ -962,6 +1065,13 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   border: 1px dashed var(--border);
   border-radius: var(--radius);
 }
+.empty-mark {
+  width: 34px;
+  height: 34px;
+  color: var(--text-faint);
+  margin-bottom: 14px;
+  opacity: 0.55;
+}
 .empty strong { color: var(--text); display: block; margin-bottom: 6px; font-size: 15px; }
 .empty span { font-size: 13px; }
 
@@ -1066,6 +1176,19 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
    `list.hidden = true` inicial do JS (toast.js cria a lista já
    escondida por padrão, só abrindo no clique de "ver detalhes"). */
 .toast-details[hidden] { display: none; }
+
+/* ── Responsivo — tablet (retrato, ex: iPad ~768–1024px) ──────────
+   Sem isso, entre o desktop wide e o breakpoint mobile de 640px a
+   grade dependia só do auto-fill (minmax(310px,1fr)), que nessa faixa
+   de largura ora cai pra 2 colunas com sobra de espaço, ora força uma
+   3ª coluna apertada, dependendo do pixel exato da viewport — nada
+   pensado pra esse tamanho de tela especificamente (comum em técnico
+   de campo usando tablet). Fixa 2 colunas previsíveis nessa faixa em
+   vez de deixar o auto-fill decidir sozinho. */
+@media (min-width: 641px) and (max-width: 1024px) {
+  #grid { grid-template-columns: repeat(2, 1fr); }
+  .toolbar { gap: 14px; }
+}
 
 /* ── Responsivo ────────────────────────────────────────────────── */
 @media (max-width: 640px) {
