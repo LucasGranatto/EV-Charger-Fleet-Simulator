@@ -83,6 +83,14 @@
             <option value="status">Status</option>
             <option value="soc">SoC</option>
           </select>
+          <div class="view-mode-toggle" role="group" aria-label="Modo de visualização da frota">
+            <button id="view-mode-cards" class="view-mode-btn active" type="button" title="Cards (detalhe, ideal até ~20 chargers)">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v5H2V3Zm7 0h5v5H9V3ZM2 10h5v3H2v-3Zm7 0h5v3H9v-3Z"/></svg>
+            </button>
+            <button id="view-mode-table" class="view-mode-btn" type="button" title="Tabela densa (varrer frota grande de relance)">
+              <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3h13v2h-13V3Zm0 4h13v2h-13V7Zm0 4h13v2h-13v-2Z"/></svg>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -120,6 +128,22 @@
     </details>
 
     <div id="grid"></div>
+    <div class="dense-table-wrap" id="dense-table-wrap" hidden>
+      <table class="dense-table" id="dense-table">
+        <thead>
+          <tr>
+            <th></th>
+            <th>ID</th>
+            <th>Status</th>
+            <th>SoC</th>
+            <th>Corrente</th>
+            <th>Energia</th>
+            <th>Fila offline</th>
+          </tr>
+        </thead>
+        <tbody id="dense-table-body"></tbody>
+      </table>
+    </div>
     </section>
 
     <section class="view-panel" data-view-panel="history" hidden>
