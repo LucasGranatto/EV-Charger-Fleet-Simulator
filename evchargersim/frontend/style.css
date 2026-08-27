@@ -15,12 +15,15 @@
    10→8, --radius-sm 7→5): instrumento de painel, não card de app.
    ─────────────────────────────────────────────────────────────── */
 :root {
+  color-scheme: dark;
+
   --bg: #0a0b0d;
   --surface: #101216;
   --surface-raised: #16191f;
   --surface-hover: #1c2028;
   --border: #262b34;
   --border-soft: #1a1e25;
+  --border-hover: #2a3548;
 
   --accent: #c17f3a;
   --accent-dim: rgba(193, 127, 58, 0.16);
@@ -39,6 +42,14 @@
   --text-dim: #97a1b3;
   --text-faint: #565f72;
 
+  --selection-text: #170f08;
+  --overlay-bg: rgba(4, 6, 10, 0.72);
+  --shadow-soft: 0 14px 30px -20px rgba(0, 0, 0, 0.65);
+  --shadow-strong: 0 20px 60px rgba(0, 0, 0, 0.5);
+  --shadow-modal: 0 8px 24px rgba(0, 0, 0, 0.4);
+  --bg-vignette-1: rgba(193, 127, 58, 0.045);
+  --bg-vignette-2: rgba(0, 0, 0, 0.22);
+
   --font-ui: "IBM Plex Sans", -apple-system, "Segoe UI", Roboto, sans-serif;
   --font-mono: "IBM Plex Mono", "SF Mono", Consolas, Menlo, monospace;
 
@@ -46,23 +57,58 @@
   --radius-sm: 5px;
 }
 
-* { box-sizing: border-box; }
+/* ── Tema claro ────────────────────────────────────────────────────
+   Mesma identidade "painel elétrico industrial" do tema escuro (cobre/
+   latão oxidado como accent, mesma convenção verde/âmbar/vermelho/
+   ardósia de sinalização) só invertida pra um fundo claro — não é um
+   tema genérico de produto SaaS "light mode" recolorido de qualquer
+   jeito. Superfícies em tom de papel/esmalte claro de painel (não
+   branco puro, que ficaria estéril), texto quase-preto azulado em vez
+   de preto puro (mais confortável de ler). Aplicado via
+   html[data-theme="light"] — atributo lido/setado por um script
+   inline no <head> (evita flash do tema errado no reload) e alternado
+   pelo botão ☀/☾ no topbar (ver theme-toggle-btn em app.js). Toda a
+   folha de estilo abaixo já usa só variáveis, então este bloco é a
+   ÚNICA coisa que precisa existir pra teoricamente já valer em toda a
+   interface. */
+html[data-theme="light"] {
+  color-scheme: light;
 
-/* Padrão sr-only — some visualmente mas continua acessível a leitor
-   de tela (ex: cabeçalho de coluna da tabela densa que já se explica
-   visualmente pela cor do led, mas precisa de um nome pra quem não
-   enxerga a cor). */
-.visually-hidden {
-  position: absolute;
-  width: 1px;
-  height: 1px;
-  padding: 0;
-  margin: -1px;
-  overflow: hidden;
-  clip: rect(0, 0, 0, 0);
-  white-space: nowrap;
-  border: 0;
+  --bg: #eef0ec;
+  --surface: #ffffff;
+  --surface-raised: #f8f8f5;
+  --surface-hover: #eef1f3;
+  --border: #d7dade;
+  --border-soft: #e4e6e9;
+  --border-hover: #b9c0ca;
+
+  --accent: #9c5f22;
+  --accent-dim: rgba(156, 95, 34, 0.12);
+  --accent-glow: rgba(156, 95, 34, 0.3);
+
+  --green: #1f7a4f;
+  --green-dim: rgba(31, 122, 79, 0.12);
+  --amber: #a1721e;
+  --amber-dim: rgba(161, 114, 30, 0.14);
+  --red: #b23a3a;
+  --red-dim: rgba(178, 58, 58, 0.12);
+  --slate: #647186;
+  --slate-dim: rgba(100, 113, 134, 0.12);
+
+  --text: #1c2027;
+  --text-dim: #4d5563;
+  --text-faint: #838d9c;
+
+  --selection-text: #fff8f0;
+  --overlay-bg: rgba(30, 33, 38, 0.4);
+  --shadow-soft: 0 10px 24px -16px rgba(30, 33, 40, 0.28);
+  --shadow-strong: 0 20px 48px -12px rgba(30, 33, 40, 0.3);
+  --shadow-modal: 0 10px 28px -8px rgba(30, 33, 40, 0.28);
+  --bg-vignette-1: rgba(156, 95, 34, 0.05);
+  --bg-vignette-2: rgba(30, 33, 40, 0.04);
 }
+
+* { box-sizing: border-box; }
 
 body {
   margin: 0;
@@ -72,18 +118,22 @@ body {
      dando profundidade ao fundo sem textura repetitiva.
   */
   background:
-    radial-gradient(ellipse 1100px 480px at 12% -12%, rgba(193, 127, 58, 0.045), transparent 60%),
-    radial-gradient(ellipse 1400px 900px at 50% 8%, transparent 45%, rgba(0, 0, 0, 0.22) 100%),
+    radial-gradient(ellipse 1100px 480px at 12% -12%, var(--bg-vignette-1), transparent 60%),
+    radial-gradient(ellipse 1400px 900px at 50% 8%, transparent 45%, var(--bg-vignette-2) 100%),
     var(--bg);
   color: var(--text);
   font-family: var(--font-ui);
   padding: 26px 32px 60px;
   min-height: 100vh;
+  /* Só a cor de fundo/texto (não os gradientes de fundo, que não
+     interpolam bem) — suaviza a troca de tema em vez de um corte seco
+     entre paletas inteiras de uma vez. */
+  transition: background-color 0.2s ease, color 0.2s ease;
 }
 
 button, input, select { font-family: inherit; }
 
-::selection { background: var(--accent-glow); color: #170f08; }
+::selection { background: var(--accent-glow); color: var(--selection-text); }
 
 :focus-visible {
   outline: 2px solid var(--accent);
@@ -104,7 +154,7 @@ svg { fill: currentColor; }
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: var(--radius);
-  box-shadow: 0 14px 30px -20px rgba(0, 0, 0, 0.65);
+  box-shadow: var(--shadow-soft);
   position: relative;
   overflow: hidden;
 }
@@ -286,6 +336,17 @@ svg { fill: currentColor; }
 }
 .icon-btn svg { width: 14px; height: 14px; }
 .icon-btn:hover:not(:disabled) { color: var(--accent); border-color: var(--accent-dim); background: var(--accent-dim); }
+
+/* Botão de tema — mostra sol OU lua conforme o tema ATUAL (não o
+   destino do clique): tema escuro ativo -> ícone de sol (é nele que
+   você clica pra "trazer o sol"); tema claro ativo -> ícone de lua.
+   As duas SVGs sempre existem no DOM (ver theme-toggle-btn em
+   index.html); só a visibilidade troca via CSS, então nenhum JS de
+   swap de innerHTML é necessário — html[data-theme] já é a única
+   fonte da verdade. */
+#theme-toggle-btn .icon-moon { display: none; }
+html[data-theme="light"] #theme-toggle-btn .icon-sun { display: none; }
+html[data-theme="light"] #theme-toggle-btn .icon-moon { display: inline-flex; }
 
 /* Badge de contagem no ícone de chaos — no accent (cor de "dado vivo"
    já usada pro SoC/SSE), não âmbar. O dot âmbar antigo dava a entender
@@ -670,6 +731,20 @@ svg { fill: currentColor; }
 .view-mode-btn:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); }
 .view-mode-btn.active { background: var(--accent-dim); color: var(--accent); }
 
+/* .history-mode-toggle reaproveita a MOLDURA de .view-mode-toggle
+   (mesmo agrupamento visual do toggle Cards/Tabela da Frota), mas os
+   botões têm texto ("Individual"/"Comparar") em vez de só um ícone —
+   a largura fixa de 30px de .view-mode-btn cortaria o texto, então os
+   dois campos específicos abaixo sobrescrevem só isso. */
+.history-mode-toggle .view-mode-btn {
+  width: auto;
+  height: 30px;
+  padding: 0 12px;
+  font-size: 12px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+
 .card {
   background: var(--surface);
   border: 1px solid var(--border);
@@ -677,7 +752,7 @@ svg { fill: currentColor; }
   padding: 16px 18px;
   transition: border-color 0.2s, box-shadow 0.2s;
 }
-.card:hover { border-color: #2a3548; }
+.card:hover { border-color: var(--border-hover); }
 .card[data-status="faulted"] { border-color: rgba(255, 92, 86, 0.35); }
 .card[data-status="charging"] { border-color: rgba(46, 158, 107, 0.32); }
 
@@ -1022,6 +1097,131 @@ svg { fill: currentColor; }
   font-style: italic;
 }
 
+/* ── Aba "Histórico" > modo "Comparar" ────────────────────────────
+   Mesmo container/moldura do modo Individual (.history-view-card),
+   só com um corpo de duas colunas: lista de seleção (checkboxes) à
+   esquerda, gráfico sobreposto à direita — igual ao layout comum de
+   "filtros à esquerda, resultado à direita" já usado em painéis de
+   BI/telemetria, pra deixar claro que a lista CONTROLA o gráfico. */
+.history-compare-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 22px 26px 20px;
+}
+
+.history-compare-controls {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 16px;
+  padding-bottom: 16px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.history-compare-metric {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.history-compare-metric label {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-faint);
+}
+#history-compare-metric-select {
+  font-family: var(--font-mono);
+  font-weight: 600;
+}
+
+.history-compare-hint {
+  font-size: 11px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+/* Fica âmbar (não vermelho — não é bem um erro) quando o limite de
+   seleção é atingido, pra chamar atenção sem soar como falha. */
+.history-compare-hint.limit-reached { color: var(--amber); font-style: normal; }
+
+.history-compare-body {
+  display: grid;
+  grid-template-columns: 190px 1fr;
+  gap: 20px;
+}
+
+.history-compare-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 360px;
+  overflow-y: auto;
+  padding-right: 4px;
+  border-right: 1px solid var(--border-soft);
+}
+
+.compare-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 8px 5px 4px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.compare-check:hover { background: var(--surface-hover); color: var(--text); }
+.compare-check input[type="checkbox"] {
+  width: 13px;
+  height: 13px;
+  accent-color: var(--accent);
+  flex-shrink: 0;
+}
+/* Pastilha de cor: mostra ANTES de marcar a caixa qual cor este
+   charger vai receber no gráfico se for selecionado — a mesma cor,
+   fixa por posição na frota (ver colorForCompareIndex em pure.js), não
+   muda quando outros chargers são (des)marcados. */
+.compare-check-swatch {
+  width: 9px;
+  height: 9px;
+  border-radius: 2px;
+  flex-shrink: 0;
+}
+.compare-check-id { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.compare-check-empty {
+  padding: 8px 4px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.history-compare-chart-wrap {
+  position: relative;
+  height: 340px;
+}
+.history-compare-chart-wrap .history-empty { font-size: 13px; padding: 0 30px; }
+
+.history-compare-legend {
+  margin-top: 16px;
+  padding-top: 16px;
+  border-top: 1px solid var(--border-soft);
+  flex-wrap: wrap;
+  row-gap: 8px;
+}
+
+@media (max-width: 640px) {
+  .history-compare-body { grid-template-columns: 1fr; }
+  .history-compare-list {
+    max-height: 160px;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    padding-bottom: 8px;
+  }
+}
+
 /* ── Faixa de controle ─────────────────────────────────────────── */
 .control-strip { display: flex; flex-direction: column; gap: 7px; }
 
@@ -1058,7 +1258,7 @@ button {
   transition: background 0.12s, border-color 0.12s, color 0.12s;
 }
 
-button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: #2a3548; }
+button:hover:not(:disabled) { background: var(--surface-hover); color: var(--text); border-color: var(--border-hover); }
 button:disabled { opacity: 0.32; cursor: not-allowed; }
 
 button.btn-primary {
@@ -1095,7 +1295,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
 .modal-overlay {
   position: fixed;
   inset: 0;
-  background: rgba(4, 6, 10, 0.72);
+  background: var(--overlay-bg);
   display: flex;
   align-items: center;
   justify-content: center;
@@ -1109,7 +1309,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   border-radius: var(--radius);
   padding: 20px 22px;
   max-width: 340px;
-  box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+  box-shadow: var(--shadow-strong);
 }
 
 .modal p { margin: 0 0 16px; font-size: 13.5px; line-height: 1.5; }
@@ -1152,7 +1352,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   opacity: 0;
   transform: translateY(8px);
   transition: opacity 0.2s, transform 0.2s;
-  box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+  box-shadow: var(--shadow-modal);
   pointer-events: auto;
 }
 .toast.show { opacity: 1; transform: translateY(0); }
@@ -1214,6 +1414,7 @@ button.danger:hover:not(:disabled) { background: var(--red-dim); }
   .view-tabs { width: 100%; }
   .view-tab { flex: 1; justify-content: center; }
   .history-view-toolbar { flex-direction: column; align-items: stretch; }
+  .history-mode-toggle { align-self: flex-start; }
   .history-view-select { flex-wrap: wrap; }
   #history-charger-select { flex: 1; min-width: 0; }
   .toolbar { flex-direction: column; align-items: stretch; }
