@@ -48,6 +48,22 @@
 
 * { box-sizing: border-box; }
 
+/* Padrão sr-only — some visualmente mas continua acessível a leitor
+   de tela (ex: cabeçalho de coluna da tabela densa que já se explica
+   visualmente pela cor do led, mas precisa de um nome pra quem não
+   enxerga a cor). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 body {
   margin: 0;
   /* Fundo liso — só as vinhetas radiais (brilho sutil perto do header
