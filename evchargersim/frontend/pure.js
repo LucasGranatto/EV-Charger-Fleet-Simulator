@@ -93,6 +93,91 @@ function formatSecondsAgo(secondsAgo) {
   return minAgo < 1 ? `-${Math.round(secondsAgo)}s` : `-${Math.round(minAgo)}min`;
 }
 
+// ── Comparação de histórico entre chargers (aba Histórico > Comparar) ──
+//
+// Paleta fixa reaproveitada por índice (módulo do tamanho) quando o
+// número de chargers selecionados excede a paleta — cada charger
+// selecionado recebe sempre a MESMA cor entre re-renderizações, porque
+// o índice vem da posição no conjunto ORDENADO de todos os chargers da
+// frota (populateCompareList em app.js), não da ordem em que foram
+// marcados na caixa de seleção.
+const COMPARE_PALETTE = [
+  "#c17f3a", "#2e9e6b", "#4f8fd9", "#d94f4f",
+  "#d9a441", "#8f6fd9", "#3fb6c9", "#b3d94f",
+];
+
+function colorForCompareIndex(index) {
+  return COMPARE_PALETTE[index % COMPARE_PALETTE.length];
+}
+
+// Métrica comparável -> rótulo/unidade/escala — fonte única usada tanto
+// pra montar o <select> de métrica (buildMetricOptions) quanto pros
+// rótulos de eixo/legend do gráfico de comparação. min/max fixos (SoC:
+// sempre 0–100%) ou null pra escala dinâmica calculada a partir dos
+// valores de fato presentes nas séries selecionadas.
+const COMPARE_METRICS = {
+  soc: { label: "SoC", unit: "%", min: 0, max: 100 },
+  actual_amps: { label: "Corrente real", unit: "A", min: 0, max: null },
+  offered_amps: { label: "Limite ofertado", unit: "A", min: 0, max: null },
+  power_kw: { label: "Potência", unit: "kW", min: 0, max: null },
+};
+
+function buildMetricOptions(selected) {
+  return Object.entries(COMPARE_METRICS).map(([key, def]) =>
+    `<option value="${key}" ${key === selected ? "selected" : ""}>${def.label} (${def.unit})</option>`
+  ).join("");
+}
+
+function formatCompareValue(metric, value) {
+  if (value === undefined || value === null || Number.isNaN(value)) return "—";
+  const unit = COMPARE_METRICS[metric] ? COMPARE_METRICS[metric].unit : "";
+  return `${value}${unit}`;
+}
+
+// Intervalo de tempo (timestamp mín/máx) cobrindo TODAS as séries
+// passadas — usado pra alinhar o eixo X de vários chargers no MESMO
+// referencial de tempo real no gráfico de comparação. Sem isso, cada
+// série usaria seu próprio início/fim (como buildLinePoints faz pra
+// uma série só), o que desalinharia visualmente chargers que começaram
+// a reportar em momentos diferentes — a comparação ficaria enganosa.
+// Retorna null se nenhuma amostra existir em nenhuma série.
+function combinedTimeRange(sampleArrays) {
+  let tMin = null;
+  let tMax = null;
+  for (const samples of sampleArrays) {
+    for (const s of samples) {
+      if (tMin === null || s.t < tMin) tMin = s.t;
+      if (tMax === null || s.t > tMax) tMax = s.t;
+    }
+  }
+  if (tMin === null) return null;
+  return { tMin, tMax };
+}
+
+// Mapeia UMA série de amostras (cada uma com timestamp real "t") pro
+// espaço [x0,x1]×[y0,y1] de um SVG usando um referencial de tempo
+// COMUM (tMin/tMax, ver combinedTimeRange) — diferente de
+// buildLinePoints, que espaça pontos só pelo ÍNDICE assumindo uma
+// única série igualmente amostrada. minVal/maxVal fixos ou null pra
+// escala dinâmica (min/max da própria série, mesma folga de 1e-6 de
+// buildLinePoints pra não dividir por zero).
+function buildTimeSeriesPoints(samples, valueKey, x0, x1, y0, y1, tMin, tMax, minVal, maxVal) {
+  if (!samples.length) return "";
+  let lo = minVal, hi = maxVal;
+  if (lo == null || hi == null) {
+    const vals = samples.map((s) => s[valueKey]);
+    lo = Math.min(...vals);
+    hi = Math.max(...vals);
+  }
+  if (hi - lo < 1e-6) hi = lo + 1;
+  const tSpan = tMax - tMin;
+  return samples.map((s) => {
+    const x = tSpan < 1e-6 ? x0 : x0 + ((s.t - tMin) / tSpan) * (x1 - x0);
+    const y = y1 - ((s[valueKey] - lo) / (hi - lo)) * (y1 - y0);
+    return `${x.toFixed(1)},${y.toFixed(1)}`;
+  }).join(" ");
+}
+
 // Ordena conforme sortBy ("id" | "status" | "soc") — ID é sempre o
 // desempate, pra ordem estável entre re-renderizações.
 function sortChargers(chargers, sortBy = "id") {
@@ -118,5 +203,7 @@ if (typeof module !== "undefined" && module.exports) {
     escapeHtml, escapeAttr, parseChargerIdsFromText,
     displayStatus, buildFaultOptions, buildLinePoints,
     formatSecondsAgo, sortChargers,
+    COMPARE_PALETTE, COMPARE_METRICS, colorForCompareIndex, buildMetricOptions,
+    formatCompareValue, combinedTimeRange, buildTimeSeriesPoints,
   };
 }
