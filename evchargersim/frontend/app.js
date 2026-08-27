@@ -1147,8 +1147,12 @@ function renderTable(chargers) {
 // padrão do navegador).
 function applyViewMode(mode) {
   viewMode = mode;
-  document.getElementById("view-mode-cards").classList.toggle("active", mode === "cards");
-  document.getElementById("view-mode-table").classList.toggle("active", mode === "table");
+  const cardsBtn = document.getElementById("view-mode-cards");
+  const tableBtn = document.getElementById("view-mode-table");
+  cardsBtn.classList.toggle("active", mode === "cards");
+  cardsBtn.setAttribute("aria-pressed", mode === "cards" ? "true" : "false");
+  tableBtn.classList.toggle("active", mode === "table");
+  tableBtn.setAttribute("aria-pressed", mode === "table" ? "true" : "false");
   syncGrid(lastChargers);
 }
 
