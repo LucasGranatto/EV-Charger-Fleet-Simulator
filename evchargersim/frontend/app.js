@@ -45,6 +45,33 @@ function qr(container, role) {
   return container.querySelector(`[data-role="${role}"]`);
 }
 
+// ── Tema claro/escuro ────────────────────────────────────────────────
+// Persistido em localStorage (mesmo padrão do token abaixo) — a
+// aplicação em si já acontece ANTES deste script rodar, via script
+// inline no <head> de index.html (evita o flash do tema errado no
+// reload); aqui só cuidamos de TROCAR o tema depois que a página já
+// está de pé, respondendo ao clique no botão ☀/☾ do topbar.
+const THEME_STORAGE_KEY = "evchargersim_theme";
+
+function getTheme() {
+  return document.documentElement.getAttribute("data-theme") === "light" ? "light" : "dark";
+}
+
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  try {
+    localStorage.setItem(THEME_STORAGE_KEY, theme);
+  } catch (e) {
+    // localStorage indisponível — tema ainda troca nesta sessão, só
+    // não persiste entre reloads (mesma degradação graciosa do script
+    // inline no <head>).
+  }
+}
+
+function toggleTheme() {
+  setTheme(getTheme() === "light" ? "dark" : "light");
+}
+
 // ── Autenticação (--control-token, opcional) ────────────────────────
 // Token guardado em localStorage — este é um app real de verdade
 // rodando no navegador do usuário (não um Artifact do Claude), então
@@ -744,10 +771,240 @@ function setActiveView(view) {
     populateHistoryChargerSelect(lastChargers);
     document.getElementById("history-charger-select").value = historyViewChargeId || "";
     updateHistoryViewHeader();
-    startHistoryViewPolling();
+    populateCompareList(lastChargers);
+    if (historyMode === "compare") {
+      startCompareViewPolling();
+    } else {
+      startHistoryViewPolling();
+    }
   } else {
     stopHistoryViewPolling();
+    stopCompareViewPolling();
   }
+}
+
+// ── Aba "Histórico" > modo "Comparar" ────────────────────────────────
+//
+// Sobrepõe a MESMA métrica (SoC, corrente real, limite ofertado ou
+// potência) de vários chargers num único gráfico, alinhados pelo
+// tempo REAL (não pelo índice da amostra — ver buildTimeSeriesPoints
+// em pure.js) — responde de relance perguntas como "qual desses 3
+// chargers chegou primeiro na fase de tapering?" ou "algum ficou muito
+// tempo parado?", sem precisar alternar um por um no modo Individual.
+//
+// Reaproveita o MESMO endpoint GET /api/history/<id> do modo
+// Individual — um fetch paralelo por charger selecionado a cada ciclo
+// de poll, nada de endpoint novo no backend.
+const COMPARE_POLL_MS = 4000;
+const COMPARE_MAX_SELECTION = 8;
+let historyMode = "single"; // "single" | "compare"
+let compareSelectedIds = new Set();
+let compareMetric = "soc";
+let compareViewPollId = null;
+// id -> índice de cor, reatribuído a cada populateCompareList() a
+// partir da posição no conjunto ORDENADO de todos os chargers da
+// frota — assim um charger mantém a mesma cor entre re-renderizações
+// (só muda se OUTRO charger anterior a ele na ordem for removido).
+let compareColorIndexById = new Map();
+
+function setHistoryMode(mode) {
+  historyMode = mode;
+  document.getElementById("history-mode-single").classList.toggle("active", mode === "single");
+  document.getElementById("history-mode-compare").classList.toggle("active", mode === "compare");
+  document.getElementById("history-mode-single").setAttribute("aria-pressed", mode === "single" ? "true" : "false");
+  document.getElementById("history-mode-compare").setAttribute("aria-pressed", mode === "compare" ? "true" : "false");
+
+  document.getElementById("history-view-select-wrap").hidden = mode !== "single";
+  document.getElementById("history-view-nav-wrap").hidden = mode !== "single";
+  document.getElementById("history-view-card").hidden = mode !== "single";
+  document.getElementById("history-compare-card").hidden = mode !== "compare";
+
+  if (mode === "compare") {
+    stopHistoryViewPolling();
+    startCompareViewPolling();
+  } else {
+    stopCompareViewPolling();
+    startHistoryViewPolling();
+  }
+}
+
+// Reconstrói a lista de checkboxes só quando o CONJUNTO de IDs muda —
+// mesmo espírito de populateHistoryChargerSelect (não expulsar o
+// usuário do meio de uma seleção em andamento a cada snapshot do SSE).
+// Chargers removidos da frota também saem de compareSelectedIds, pra
+// não deixar o gráfico tentando comparar um charger que já não existe.
+function populateCompareList(chargers) {
+  const list = document.getElementById("history-compare-list");
+  const ids = chargers.map((c) => c.charge_point_id).sort();
+  const currentIds = Array.from(list.querySelectorAll("input[type=checkbox]")).map((el) => el.value);
+  const changed = ids.length !== currentIds.length || ids.some((id, i) => id !== currentIds[i]);
+  if (!changed) return;
+
+  compareColorIndexById = new Map(ids.map((id, i) => [id, i]));
+  for (const id of Array.from(compareSelectedIds)) {
+    if (!ids.includes(id)) compareSelectedIds.delete(id);
+  }
+
+  if (ids.length === 0) {
+    list.innerHTML = `<div class="compare-check-empty">nenhum charger na frota ainda</div>`;
+  } else {
+    list.innerHTML = ids.map((id) => {
+      const color = colorForCompareIndex(compareColorIndexById.get(id));
+      const checked = compareSelectedIds.has(id) ? "checked" : "";
+      return `
+        <label class="compare-check">
+          <input type="checkbox" value="${escapeAttr(id)}" ${checked}>
+          <i class="compare-check-swatch" style="background:${color}"></i>
+          <span class="compare-check-id">${escapeHtml(id)}</span>
+        </label>`;
+    }).join("");
+  }
+  updateCompareHint();
+}
+
+function updateCompareHint() {
+  const hint = document.getElementById("history-compare-hint");
+  const n = compareSelectedIds.size;
+  hint.classList.toggle("limit-reached", n >= COMPARE_MAX_SELECTION);
+  if (n >= COMPARE_MAX_SELECTION) {
+    hint.textContent = `limite de ${COMPARE_MAX_SELECTION} chargers atingido`;
+  } else {
+    hint.textContent = `${n} de até ${COMPARE_MAX_SELECTION} chargers selecionados`;
+  }
+}
+
+function toggleCompareCharger(id, checked) {
+  if (checked && compareSelectedIds.size >= COMPARE_MAX_SELECTION) {
+    toast(`Selecione no máximo ${COMPARE_MAX_SELECTION} chargers por vez pra manter o gráfico legível.`, "info");
+    const input = document.querySelector(`#history-compare-list input[value="${CSS.escape(id)}"]`);
+    if (input) input.checked = false;
+    return;
+  }
+  if (checked) compareSelectedIds.add(id);
+  else compareSelectedIds.delete(id);
+  updateCompareHint();
+  fetchAndRenderCompare();
+}
+
+async function fetchAndRenderCompare() {
+  const card = document.getElementById("history-compare-card");
+  const ids = Array.from(compareSelectedIds);
+  if (ids.length === 0) {
+    renderCompareChart(card, {});
+    return;
+  }
+  try {
+    const results = await Promise.all(ids.map(async (id) => {
+      const res = await apiFetch(`/api/history/${encodeURIComponent(id)}`);
+      return [id, res.ok ? await res.json() : []];
+    }));
+    const seriesById = Object.fromEntries(results);
+    // Um charger pode ter sido removido/desmarcado enquanto o fetch
+    // estava em voo — descarta o resultado se a seleção já mudou,
+    // pra não pintar um gráfico com dado velho por cima do atual.
+    if (historyMode === "compare") renderCompareChart(card, seriesById);
+  } catch (e) {
+    // Silencioso, igual ao poll do modo Individual: falha pontual de
+    // rede não deve virar toast a cada 4s, o próximo poll tenta de novo.
+  }
+}
+
+function stopCompareViewPolling() {
+  if (compareViewPollId) {
+    clearInterval(compareViewPollId);
+    compareViewPollId = null;
+  }
+}
+
+function startCompareViewPolling() {
+  stopCompareViewPolling();
+  fetchAndRenderCompare();
+  compareViewPollId = setInterval(fetchAndRenderCompare, COMPARE_POLL_MS);
+}
+
+// Mesma técnica visual do gráfico Individual (grade + linhas num SVG
+// de coordenadas abstratas), só que N linhas em vez de 3 fixas — uma
+// por charger selecionado, cada uma na cor atribuída em
+// populateCompareList — e o eixo X mapeado por TEMPO REAL comum (ver
+// combinedTimeRange/buildTimeSeriesPoints em pure.js), não por índice,
+// pra alinhar corretamente chargers com históricos de tamanhos ou
+// janelas diferentes.
+function renderCompareChart(card, seriesById) {
+  const svg = qr(card, "compare-svg");
+  const emptyMsg = qr(card, "compare-empty");
+  const legend = qr(card, "compare-legend");
+
+  const ids = Object.keys(seriesById);
+  const seriesArrays = ids.map((id) => seriesById[id]);
+  const range = combinedTimeRange(seriesArrays);
+  const hasEnoughData = range !== null && ids.some((id) => seriesById[id].length >= 2);
+
+  if (ids.length === 0 || !hasEnoughData) {
+    svg.innerHTML = "";
+    emptyMsg.hidden = false;
+    emptyMsg.textContent = ids.length === 0
+      ? "marque um ou mais chargers na lista ao lado para comparar"
+      : "ainda sem amostras suficientes — aguarde o próximo ciclo de MeterValues";
+    legend.innerHTML = "";
+    return;
+  }
+  emptyMsg.hidden = true;
+
+  const plotX0 = 32, plotX1 = 272, plotY0 = 10, plotY1 = 86;
+  const metricDef = COMPARE_METRICS[compareMetric] || COMPARE_METRICS.soc;
+
+  // Escala fixa (SoC: 0–100%) ou dinâmica (corrente/potência: maior
+  // valor entre TODAS as séries selecionadas, com piso de 32 pras
+  // séries de corrente não ficarem com uma escala minúscula quando
+  // todo mundo está com pouca carga).
+  let scaleMin = metricDef.min, scaleMax = metricDef.max;
+  if (scaleMax == null) {
+    const allVals = seriesArrays.flat().map((s) => s[compareMetric]);
+    scaleMax = Math.max(compareMetric === "power_kw" ? 1 : 32, ...allVals);
+    scaleMin = 0;
+  }
+
+  const yTicks = [scaleMin, (scaleMin + scaleMax) / 2, scaleMax];
+  const gridLines = yTicks.map((tick) => {
+    const y = (plotY1 - ((tick - scaleMin) / (scaleMax - scaleMin)) * (plotY1 - plotY0)).toFixed(1);
+    return `<line x1="${plotX0}" y1="${y}" x2="${plotX1}" y2="${y}" class="history-grid${tick === scaleMin ? " history-grid-base" : ""}" />`;
+  }).join("");
+  const yLabels = yTicks.map((tick) => {
+    const y = (plotY1 - ((tick - scaleMin) / (scaleMax - scaleMin)) * (plotY1 - plotY0) + 3).toFixed(1);
+    return `<text x="${plotX0 - 5}" y="${y}" class="history-axis-label history-axis-label-soc" text-anchor="end">${Math.round(tick)}${metricDef.unit}</text>`;
+  }).join("");
+
+  const xTicks = [
+    { x: plotX0, label: formatSecondsAgo(range.tMax - range.tMin), anchor: "start" },
+    { x: (plotX0 + plotX1) / 2, label: formatSecondsAgo((range.tMax - range.tMin) / 2), anchor: "middle" },
+    { x: plotX1, label: "agora", anchor: "end" },
+  ];
+  const xLabels = xTicks.map(({ x, label, anchor }) =>
+    `<text x="${x}" y="${plotY1 + 14}" class="history-axis-label history-axis-label-time" text-anchor="${anchor}">${label}</text>`
+  ).join("");
+
+  let linesSvg = "";
+  const legendItems = [];
+  for (const id of ids) {
+    const samples = seriesById[id];
+    const color = colorForCompareIndex(compareColorIndexById.get(id) ?? 0);
+    if (samples.length >= 2) {
+      const points = buildTimeSeriesPoints(
+        samples, compareMetric, plotX0, plotX1, plotY0, plotY1,
+        range.tMin, range.tMax, scaleMin, scaleMax
+      );
+      linesSvg += `<polyline points="${points}" class="history-line" style="stroke:${color}" />`;
+      const [lastX, lastY] = points.split(" ").pop().split(",");
+      linesSvg += `<circle cx="${lastX}" cy="${lastY}" r="2.2" class="history-dot" style="fill:${color}" />`;
+    }
+    const lastValue = samples.length ? samples[samples.length - 1][compareMetric] : null;
+    legendItems.push(
+      `<span class="legend-item"><i style="background:${color}"></i>${escapeHtml(id)} <b>${formatCompareValue(compareMetric, lastValue)}</b></span>`
+    );
+  }
+
+  svg.innerHTML = `${gridLines}${linesSvg}${yLabels}${xLabels}`;
+  legend.innerHTML = legendItems.join("");
 }
 
 // buildLinePoints e formatSecondsAgo agora vivem em pure.js.
@@ -1147,12 +1404,8 @@ function renderTable(chargers) {
 // padrão do navegador).
 function applyViewMode(mode) {
   viewMode = mode;
-  const cardsBtn = document.getElementById("view-mode-cards");
-  const tableBtn = document.getElementById("view-mode-table");
-  cardsBtn.classList.toggle("active", mode === "cards");
-  cardsBtn.setAttribute("aria-pressed", mode === "cards" ? "true" : "false");
-  tableBtn.classList.toggle("active", mode === "table");
-  tableBtn.setAttribute("aria-pressed", mode === "table" ? "true" : "false");
+  document.getElementById("view-mode-cards").classList.toggle("active", mode === "cards");
+  document.getElementById("view-mode-table").classList.toggle("active", mode === "table");
   syncGrid(lastChargers);
 }
 
@@ -1201,9 +1454,10 @@ function syncGrid(chargers) {
   // removido e outro assumiu o lugar), não a cada snapshot.
   const chargerBeforeSync = historyViewChargeId;
   populateHistoryChargerSelect(chargers);
+  populateCompareList(chargers);
   if (activeView === "history") {
     updateHistoryViewHeader();
-    if (historyViewChargeId !== chargerBeforeSync) startHistoryViewPolling();
+    if (historyMode === "single" && historyViewChargeId !== chargerBeforeSync) startHistoryViewPolling();
   }
 
   const grid = document.getElementById("grid");
@@ -1357,6 +1611,7 @@ document.getElementById("sort-select").addEventListener("change", (e) => {
 document.getElementById("view-mode-cards").addEventListener("click", () => applyViewMode("cards"));
 document.getElementById("view-mode-table").addEventListener("click", () => applyViewMode("table"));
 document.getElementById("token-btn").addEventListener("click", promptForToken);
+document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
 document.getElementById("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
 
 document.querySelectorAll(".view-tab").forEach((btn) => {
@@ -1364,6 +1619,21 @@ document.querySelectorAll(".view-tab").forEach((btn) => {
 });
 document.getElementById("history-charger-select").addEventListener("change", (e) => {
   selectHistoryCharger(e.target.value);
+});
+document.getElementById("history-mode-single").addEventListener("click", () => setHistoryMode("single"));
+document.getElementById("history-mode-compare").addEventListener("click", () => setHistoryMode("compare"));
+document.getElementById("history-compare-metric-select").innerHTML = buildMetricOptions(compareMetric);
+document.getElementById("history-compare-metric-select").addEventListener("change", (e) => {
+  compareMetric = e.target.value;
+  fetchAndRenderCompare();
+});
+// Delegação num único listener no container (em vez de um por
+// checkbox) — a lista inteira é reconstruída via innerHTML sempre que
+// o conjunto de chargers muda (ver populateCompareList), então
+// listeners individuais seriam perdidos a cada reconstrução.
+document.getElementById("history-compare-list").addEventListener("change", (e) => {
+  const input = e.target.closest("input[type=checkbox]");
+  if (input) toggleCompareCharger(input.value, input.checked);
 });
 document.getElementById("history-prev-btn").addEventListener("click", () => {
   const select = document.getElementById("history-charger-select");

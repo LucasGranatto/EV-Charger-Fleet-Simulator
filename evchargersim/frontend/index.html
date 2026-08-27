@@ -3,7 +3,27 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark light">
 <title>EVChargerSim — Painel de Controle</title>
+<script>
+  // Aplica o tema salvo ANTES do CSS pintar a página — sem isso, a
+  // página sempre nasceria escura (o padrão do :root em style.css) e
+  // só trocaria pra clara um instante depois via JS em app.js,
+  // produzindo um "flash" perceptível de tema errado a cada reload
+  // pra quem usa o tema claro. Inline e síncrono de propósito: um
+  // <script src="app.js"> normal (carregado no fim do <body>) rodaria
+  // tarde demais pra evitar esse flash.
+  (function () {
+    try {
+      var saved = localStorage.getItem("evchargersim_theme");
+      var theme = saved || (window.matchMedia && window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+      document.documentElement.setAttribute("data-theme", theme);
+    } catch (e) {
+      // localStorage indisponível (ex: modo privado restrito) — fica
+      // no tema escuro padrão do :root, sem quebrar o carregamento.
+    }
+  })();
+</script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
@@ -33,6 +53,10 @@
       <div class="link-status">
         <span class="sse-dot" id="sse-dot"></span>
         <span class="link-status-label" id="link-status-label">conectando</span>
+        <button id="theme-toggle-btn" class="icon-btn" type="button" title="Alternar tema claro/escuro">
+          <svg class="icon-sun" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.2a1 1 0 0 1-1-1V1a1 1 0 1 1 2 0v1.2a1 1 0 0 1-1 1Zm0 11.6a1 1 0 0 1 1 1V17a1 1 0 1 1-2 0v-1.2a1 1 0 0 1 1-1ZM3.2 8a1 1 0 0 1-1 1H1a1 1 0 1 1 0-2h1.2a1 1 0 0 1 1 1Zm11.6 0a1 1 0 0 1 1-1H17a1 1 0 1 1 0 2h-1.2a1 1 0 0 1-1-1ZM4.6 4.6a1 1 0 0 1-1.4 0L2.3 3.7a1 1 0 1 1 1.4-1.4l.9.9a1 1 0 0 1 0 1.4Zm8.2 8.2a1 1 0 0 1-1.4 0l-.9-.9a1 1 0 1 1 1.4-1.4l.9.9a1 1 0 0 1 0 1.4Zm-8.2 0a1 1 0 0 1 0-1.4l.9-.9a1 1 0 1 1 1.4 1.4l-.9.9a1 1 0 0 1-1.4 0Zm8.2-8.2a1 1 0 0 1 0-1.4l.9-.9a1 1 0 1 1 1.4 1.4l-.9.9a1 1 0 0 1-1.4 0ZM8 12a4 4 0 1 1 0-8 4 4 0 0 1 0 8Z"/></svg>
+          <svg class="icon-moon" viewBox="0 0 16 16" aria-hidden="true"><path d="M14.5 10.4A6.4 6.4 0 0 1 6.6 1.5a6.6 6.6 0 1 0 7.9 8.9Z"/></svg>
+        </button>
         <button id="token-btn" class="icon-btn" type="button" title="Definir token de acesso (--control-token)">
           <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M4 7V5a4 4 0 1 1 8 0v2h1a1 1 0 0 1 1 1v6a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h1Zm2 0h4V5a2 2 0 1 0-4 0v2Z"/></svg>
         </button>
@@ -84,10 +108,10 @@
             <option value="soc">SoC</option>
           </select>
           <div class="view-mode-toggle" role="group" aria-label="Modo de visualização da frota">
-            <button id="view-mode-cards" class="view-mode-btn active" type="button" aria-pressed="true" title="Cards (detalhe, ideal até ~20 chargers)">
+            <button id="view-mode-cards" class="view-mode-btn active" type="button" title="Cards (detalhe, ideal até ~20 chargers)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M2 3h5v5H2V3Zm7 0h5v5H9V3ZM2 10h5v3H2v-3Zm7 0h5v3H9v-3Z"/></svg>
             </button>
-            <button id="view-mode-table" class="view-mode-btn" type="button" aria-pressed="false" title="Tabela densa (varrer frota grande de relance)">
+            <button id="view-mode-table" class="view-mode-btn" type="button" title="Tabela densa (varrer frota grande de relance)">
               <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M1.5 3h13v2h-13V3Zm0 4h13v2h-13V7Zm0 4h13v2h-13v-2Z"/></svg>
             </button>
           </div>
@@ -129,16 +153,16 @@
 
     <div id="grid"></div>
     <div class="dense-table-wrap" id="dense-table-wrap" hidden>
-      <table class="dense-table" id="dense-table" aria-label="Tabela densa da frota">
+      <table class="dense-table" id="dense-table">
         <thead>
           <tr>
-            <th scope="col"><span class="visually-hidden">Status</span></th>
-            <th scope="col">ID</th>
-            <th scope="col">Status</th>
-            <th scope="col">SoC</th>
-            <th scope="col">Corrente</th>
-            <th scope="col">Energia</th>
-            <th scope="col">Fila offline</th>
+            <th></th>
+            <th>ID</th>
+            <th>Status</th>
+            <th>SoC</th>
+            <th>Corrente</th>
+            <th>Energia</th>
+            <th>Fila offline</th>
           </tr>
         </thead>
         <tbody id="dense-table-body"></tbody>
@@ -148,11 +172,19 @@
 
     <section class="view-panel" data-view-panel="history" hidden>
       <div class="history-view-toolbar">
-        <div class="history-view-select">
+        <div class="history-mode-toggle view-mode-toggle" role="group" aria-label="Modo de exibição do histórico">
+          <button id="history-mode-single" class="view-mode-btn active" type="button" title="Gráfico ampliado de UM charger por vez">
+            Individual
+          </button>
+          <button id="history-mode-compare" class="view-mode-btn" type="button" title="Sobrepor a mesma métrica de vários chargers num único gráfico">
+            Comparar
+          </button>
+        </div>
+        <div class="history-view-select" id="history-view-select-wrap">
           <label for="history-charger-select">Charger</label>
           <select id="history-charger-select"></select>
         </div>
-        <div class="history-view-nav">
+        <div class="history-view-nav" id="history-view-nav-wrap">
           <button id="history-prev-btn" class="icon-btn" type="button" title="Charger anterior">
             <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M10 3 5 8l5 5"/></svg>
           </button>
@@ -178,6 +210,30 @@
           <span class="legend-item legend-offered"><i></i>Limite <b data-role="history-offered-now">—</b></span>
           <span class="history-window" data-role="history-window"></span>
         </div>
+      </div>
+
+      <!-- Modo "Comparar": sobrepõe a MESMA métrica (SoC, corrente...)
+           de vários chargers num único gráfico, alinhados pelo tempo
+           real (não pelo índice da amostra — ver buildTimeSeriesPoints
+           em pure.js), pra responder "quem está carregando mais rápido
+           / chegou antes na tapering / ficou mais tempo parado" de
+           relance, sem precisar alternar entre cards um por um. -->
+      <div class="history-compare-card" id="history-compare-card" hidden>
+        <div class="history-compare-controls">
+          <div class="history-compare-metric">
+            <label for="history-compare-metric-select">Métrica</label>
+            <select id="history-compare-metric-select"></select>
+          </div>
+          <span class="history-compare-hint" id="history-compare-hint"></span>
+        </div>
+        <div class="history-compare-body">
+          <div class="history-compare-list" id="history-compare-list"><!-- checkboxes, preenchido por app.js --></div>
+          <div class="history-compare-chart-wrap">
+            <svg class="history-chart" viewBox="0 0 300 122" preserveAspectRatio="xMidYMid meet" data-role="compare-svg" aria-hidden="true"></svg>
+            <span class="history-empty" data-role="compare-empty">marque um ou mais chargers na lista ao lado para comparar</span>
+          </div>
+        </div>
+        <div class="history-legend history-view-legend history-compare-legend" data-role="compare-legend"></div>
       </div>
 
       <div class="empty" id="history-view-no-chargers" hidden>
