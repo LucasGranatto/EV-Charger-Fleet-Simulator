@@ -28,13 +28,19 @@
   --accent: #c17f3a;
   --accent-dim: rgba(193, 127, 58, 0.16);
   --accent-glow: rgba(193, 127, 58, 0.38);
+  --accent-border: rgba(193, 127, 58, 0.45);
+  --accent-hover-bg: rgba(193, 127, 58, 0.24);
+  --accent-strong-text: rgba(193, 127, 58, 0.7);
 
   --green: #2e9e6b;
   --green-dim: rgba(46, 158, 107, 0.16);
+  --green-card-border: rgba(46, 158, 107, 0.32);
   --amber: #d9a441;
   --amber-dim: rgba(217, 164, 65, 0.16);
   --red: #d94f4f;
   --red-dim: rgba(217, 79, 79, 0.16);
+  --red-border: rgba(217, 79, 79, 0.45);
+  --red-card-border: rgba(255, 92, 86, 0.35);
   --slate: #5c6b82;
   --slate-dim: rgba(92, 107, 130, 0.16);
 
@@ -85,13 +91,19 @@ html[data-theme="light"] {
   --accent: #9c5f22;
   --accent-dim: rgba(156, 95, 34, 0.12);
   --accent-glow: rgba(156, 95, 34, 0.3);
+  --accent-border: rgba(156, 95, 34, 0.5);
+  --accent-hover-bg: rgba(156, 95, 34, 0.2);
+  --accent-strong-text: rgba(156, 95, 34, 0.85);
 
   --green: #1f7a4f;
   --green-dim: rgba(31, 122, 79, 0.12);
+  --green-card-border: rgba(31, 122, 79, 0.4);
   --amber: #a1721e;
   --amber-dim: rgba(161, 114, 30, 0.14);
   --red: #b23a3a;
   --red-dim: rgba(178, 58, 58, 0.12);
+  --red-border: rgba(178, 58, 58, 0.5);
+  --red-card-border: rgba(178, 58, 58, 0.42);
   --slate: #647186;
   --slate-dim: rgba(100, 113, 134, 0.12);
 
@@ -109,6 +121,17 @@ html[data-theme="light"] {
 }
 
 * { box-sizing: border-box; }
+
+/* Contém topbar/abas/conteúdo dentro de uma largura confortável de
+   leitura em monitores ultra-wide — sem isso, com poucos chargers a
+   grade (#grid) esticava os cards bem além do que é legível, e a
+   topbar ficava com respiro vazio desproporcional nas pontas. O fundo
+   (gradientes no body, ver acima) continua full-bleed por trás — só o
+   CONTEÚDO fica centralizado, não a "tela" inteira. */
+.page {
+  max-width: 1440px;
+  margin: 0 auto;
+}
 
 body {
   margin: 0;
@@ -314,7 +337,7 @@ svg { fill: currentColor; }
   color: var(--text-faint);
   margin-left: 1px;
 }
-.view-tab.active .view-tab-hint { color: rgba(193, 127, 58, 0.7); }
+.view-tab.active .view-tab-hint { color: var(--accent-strong-text); }
 
 /* Mesma classe de bug do .history-empty/.advanced-add-row (ver
    comentários mais abaixo) — só o atributo `hidden` do JS decide
@@ -753,8 +776,8 @@ html[data-theme="light"] #theme-toggle-btn .icon-moon { display: inline-flex; }
   transition: border-color 0.2s, box-shadow 0.2s;
 }
 .card:hover { border-color: var(--border-hover); }
-.card[data-status="faulted"] { border-color: rgba(255, 92, 86, 0.35); }
-.card[data-status="charging"] { border-color: rgba(46, 158, 107, 0.32); }
+.card[data-status="faulted"] { border-color: var(--red-card-border); }
+.card[data-status="charging"] { border-color: var(--green-card-border); }
 
 .card-top {
   display: flex;
@@ -1263,13 +1286,13 @@ button:disabled { opacity: 0.32; cursor: not-allowed; }
 
 button.btn-primary {
   background: var(--accent-dim);
-  border-color: rgba(193, 127, 58, 0.45);
+  border-color: var(--accent-border);
   color: var(--accent);
   font-weight: 600;
 }
-button.btn-primary:hover:not(:disabled) { background: rgba(193, 127, 58, 0.24); }
+button.btn-primary:hover:not(:disabled) { background: var(--accent-hover-bg); }
 
-button.danger { border-color: rgba(217, 79, 79, 0.45); color: var(--red); }
+button.danger { border-color: var(--red-border); color: var(--red); }
 button.danger:hover:not(:disabled) { background: var(--red-dim); }
 
 /* ── Empty state ───────────────────────────────────────────────── */
