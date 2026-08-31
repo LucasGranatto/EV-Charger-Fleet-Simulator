@@ -45,6 +45,12 @@ function qr(container, role) {
   return container.querySelector(`[data-role="${role}"]`);
 }
 
+// Atalho pra document.getElementById — repetido 75+ vezes no arquivo
+// (algumas IDs buscadas em até 6 pontos diferentes, ex:
+// history-charger-select). Mesmo `$(id)` por
+// trás, só sem reescrever o nome inteiro em cada chamada.
+const $ = (id) => document.getElementById(id);
+
 // ── Tema claro/escuro ────────────────────────────────────────────────
 // Persistido em localStorage (mesmo padrão do token abaixo) — a
 // aplicação em si já acontece ANTES deste script rodar, via script
@@ -115,11 +121,11 @@ async function apiFetch(url, options = {}) {
 }
 
 function promptDialog(message, defaultValue = "") {
-  const overlay = document.getElementById("prompt-overlay");
-  const title = document.getElementById("prompt-title");
-  const input = document.getElementById("prompt-input");
-  const okBtn = document.getElementById("prompt-ok");
-  const cancelBtn = document.getElementById("prompt-cancel");
+  const overlay = $("prompt-overlay");
+  const title = $("prompt-title");
+  const input = $("prompt-input");
+  const okBtn = $("prompt-ok");
+  const cancelBtn = $("prompt-cancel");
   title.textContent = message;
   input.value = defaultValue;
   overlay.hidden = false;
@@ -169,7 +175,7 @@ async function promptForToken() {
 // ── Toasts empilháveis (com detalhe opcional expansível) ────────────
 
 function toast(message, kind = "info", details = null) {
-  const stack = document.getElementById("toast-stack");
+  const stack = $("toast-stack");
   const el = document.createElement("div");
   el.className = `toast ${kind}`;
 
@@ -233,10 +239,10 @@ function showBulkResultToast(data) {
 // ── Modal de confirmação (substitui confirm() nativo) ───────────────
 
 function confirmDialog(message) {
-  const overlay = document.getElementById("confirm-overlay");
-  const title = document.getElementById("confirm-title");
-  const okBtn = document.getElementById("confirm-ok");
-  const cancelBtn = document.getElementById("confirm-cancel");
+  const overlay = $("confirm-overlay");
+  const title = $("confirm-title");
+  const okBtn = $("confirm-ok");
+  const cancelBtn = $("confirm-cancel");
   title.textContent = message;
   overlay.hidden = false;
   // Foco no botão SEGURO (Cancelar) por padrão, não no destrutivo
@@ -297,10 +303,10 @@ async function sendCommand(chargeId, cmd, args) {
 // (ver CHARGER_OVERRIDE_FIELDS em config.py).
 function collectAddOverrides() {
   const overrides = {};
-  const batteryKwh = parseFloat(document.getElementById("adv-battery-kwh").value);
-  const initialSoc = parseFloat(document.getElementById("adv-initial-soc").value);
-  const defaultAmps = parseFloat(document.getElementById("adv-default-amps").value);
-  const phases = document.getElementById("adv-phases").value;
+  const batteryKwh = parseFloat($("adv-battery-kwh").value);
+  const initialSoc = parseFloat($("adv-initial-soc").value);
+  const defaultAmps = parseFloat($("adv-default-amps").value);
+  const phases = $("adv-phases").value;
   if (!Number.isNaN(batteryKwh) && batteryKwh > 0) overrides.battery_capacity_wh = batteryKwh * 1000;
   if (!Number.isNaN(initialSoc)) overrides.initial_soc_percent = initialSoc;
   if (!Number.isNaN(defaultAmps) && defaultAmps >= 0) overrides.default_offered_amps = defaultAmps;
@@ -351,7 +357,7 @@ async function addManyChargers(ids, { sourceLabel = null } = {}) {
 // ("CH01, CH02, CH03") digitada no campo — ver addManyChargers() para
 // o que de fato dispara as requisições.
 async function addCharger() {
-  const input = document.getElementById("new-charger-id");
+  const input = $("new-charger-id");
   const ids = input.value.split(",").map((s) => s.trim()).filter(Boolean);
   if (ids.length === 0) {
     toast("Digite ao menos um ID antes de adicionar.", "error");
@@ -425,7 +431,7 @@ function visibleChargerIds() {
 }
 
 function updateBulkCountLabel() {
-  const label = document.getElementById("bulk-actions-label");
+  const label = $("bulk-actions-label");
   if (!label) return;
   const n = visibleChargerIds().length;
   label.textContent = currentFilter ? `Visíveis (${n}):` : `Todos (${n}):`;
@@ -679,7 +685,7 @@ function stopHistoryViewPolling() {
 function startHistoryViewPolling() {
   stopHistoryViewPolling();
   if (!historyViewChargeId) return;
-  const panel = document.getElementById("history-view-card");
+  const panel = $("history-view-card");
   fetchAndRenderHistory(historyViewChargeId, panel);
   historyViewPollId = setInterval(() => fetchAndRenderHistory(historyViewChargeId, panel), HISTORY_POLL_MS);
 }
@@ -688,7 +694,7 @@ function startHistoryViewPolling() {
 // preservando a seleção atual sempre que possível, pra não expulsar o
 // usuário do charger que ele estava olhando a cada snapshot do SSE.
 function populateHistoryChargerSelect(chargers) {
-  const select = document.getElementById("history-charger-select");
+  const select = $("history-charger-select");
   const ids = chargers.map((c) => c.charge_point_id).sort();
   const currentOptionIds = Array.from(select.options).map((o) => o.value);
   const changed = ids.length !== currentOptionIds.length || ids.some((id, i) => id !== currentOptionIds[i]);
@@ -706,8 +712,8 @@ function populateHistoryChargerSelect(chargers) {
     }
   }
 
-  const noChargers = document.getElementById("history-view-no-chargers");
-  const card = document.getElementById("history-view-card");
+  const noChargers = $("history-view-no-chargers");
+  const card = $("history-view-card");
   const nav = document.querySelector(".history-view-toolbar");
   const hasChargers = ids.length > 0;
   noChargers.hidden = hasChargers;
@@ -721,9 +727,9 @@ function populateHistoryChargerSelect(chargers) {
 // dependem do poll acima.
 function updateHistoryViewHeader() {
   const c = lastChargers.find((x) => x.charge_point_id === historyViewChargeId);
-  const led = document.getElementById("history-view-led");
-  const pill = document.getElementById("history-view-pill");
-  const idEl = document.getElementById("history-view-id");
+  const led = $("history-view-led");
+  const pill = $("history-view-pill");
+  const idEl = $("history-view-id");
   if (!c) {
     led.className = "led";
     pill.className = "pill";
@@ -740,7 +746,7 @@ function updateHistoryViewHeader() {
 
 function selectHistoryCharger(chargeId) {
   historyViewChargeId = chargeId;
-  document.getElementById("history-charger-select").value = chargeId;
+  $("history-charger-select").value = chargeId;
   updateHistoryViewHeader();
   if (activeView === "history") startHistoryViewPolling();
 }
@@ -769,7 +775,7 @@ function setActiveView(view) {
 
   if (view === "history") {
     populateHistoryChargerSelect(lastChargers);
-    document.getElementById("history-charger-select").value = historyViewChargeId || "";
+    $("history-charger-select").value = historyViewChargeId || "";
     updateHistoryViewHeader();
     populateCompareList(lastChargers);
     if (historyMode === "compare") {
@@ -809,15 +815,15 @@ let compareColorIndexById = new Map();
 
 function setHistoryMode(mode) {
   historyMode = mode;
-  document.getElementById("history-mode-single").classList.toggle("active", mode === "single");
-  document.getElementById("history-mode-compare").classList.toggle("active", mode === "compare");
-  document.getElementById("history-mode-single").setAttribute("aria-pressed", mode === "single" ? "true" : "false");
-  document.getElementById("history-mode-compare").setAttribute("aria-pressed", mode === "compare" ? "true" : "false");
+  $("history-mode-single").classList.toggle("active", mode === "single");
+  $("history-mode-compare").classList.toggle("active", mode === "compare");
+  $("history-mode-single").setAttribute("aria-pressed", mode === "single" ? "true" : "false");
+  $("history-mode-compare").setAttribute("aria-pressed", mode === "compare" ? "true" : "false");
 
-  document.getElementById("history-view-select-wrap").hidden = mode !== "single";
-  document.getElementById("history-view-nav-wrap").hidden = mode !== "single";
-  document.getElementById("history-view-card").hidden = mode !== "single";
-  document.getElementById("history-compare-card").hidden = mode !== "compare";
+  $("history-view-select-wrap").hidden = mode !== "single";
+  $("history-view-nav-wrap").hidden = mode !== "single";
+  $("history-view-card").hidden = mode !== "single";
+  $("history-compare-card").hidden = mode !== "compare";
 
   if (mode === "compare") {
     stopHistoryViewPolling();
@@ -834,7 +840,7 @@ function setHistoryMode(mode) {
 // Chargers removidos da frota também saem de compareSelectedIds, pra
 // não deixar o gráfico tentando comparar um charger que já não existe.
 function populateCompareList(chargers) {
-  const list = document.getElementById("history-compare-list");
+  const list = $("history-compare-list");
   const ids = chargers.map((c) => c.charge_point_id).sort();
   const currentIds = Array.from(list.querySelectorAll("input[type=checkbox]")).map((el) => el.value);
   const changed = ids.length !== currentIds.length || ids.some((id, i) => id !== currentIds[i]);
@@ -863,7 +869,7 @@ function populateCompareList(chargers) {
 }
 
 function updateCompareHint() {
-  const hint = document.getElementById("history-compare-hint");
+  const hint = $("history-compare-hint");
   const n = compareSelectedIds.size;
   hint.classList.toggle("limit-reached", n >= COMPARE_MAX_SELECTION);
   if (n >= COMPARE_MAX_SELECTION) {
@@ -887,7 +893,7 @@ function toggleCompareCharger(id, checked) {
 }
 
 async function fetchAndRenderCompare() {
-  const card = document.getElementById("history-compare-card");
+  const card = $("history-compare-card");
   const ids = Array.from(compareSelectedIds);
   if (ids.length === 0) {
     renderCompareChart(card, {});
@@ -1338,7 +1344,7 @@ function updateCard(el, c) {
 }
 
 function renderEmptyState(hasFilterButNoMatch) {
-  const grid = document.getElementById("grid");
+  const grid = $("grid");
   cardElements.clear();
   grid.innerHTML = hasFilterButNoMatch
     ? `<div class="empty">
@@ -1354,7 +1360,7 @@ function renderEmptyState(hasFilterButNoMatch) {
 }
 
 function renderTable(chargers) {
-  const tbody = document.getElementById("dense-table-body");
+  const tbody = $("dense-table-body");
   const filtered = chargers.filter(
     (c) => !currentFilter || c.charge_point_id.toLowerCase().includes(currentFilter)
   );
@@ -1388,7 +1394,7 @@ function renderTable(chargers) {
   tbody.querySelectorAll("tr[data-id]").forEach((row) => {
     row.addEventListener("click", () => {
       const id = row.dataset.id;
-      document.getElementById("search-input").value = id;
+      $("search-input").value = id;
       currentFilter = id.toLowerCase();
       applyViewMode("cards");
     });
@@ -1404,8 +1410,8 @@ function renderTable(chargers) {
 // padrão do navegador).
 function applyViewMode(mode) {
   viewMode = mode;
-  document.getElementById("view-mode-cards").classList.toggle("active", mode === "cards");
-  document.getElementById("view-mode-table").classList.toggle("active", mode === "table");
+  $("view-mode-cards").classList.toggle("active", mode === "cards");
+  $("view-mode-table").classList.toggle("active", mode === "table");
   syncGrid(lastChargers);
 }
 
@@ -1420,13 +1426,13 @@ function applyViewMode(mode) {
 // sobrescrito na próxima renderização, exatamente como já acontecia
 // entre renderEmptyState() e a grade populada.
 function renderLoadingState() {
-  const grid = document.getElementById("grid");
+  const grid = $("grid");
   cardElements.clear();
   grid.innerHTML = `<div class="empty empty-loading"><strong>Carregando frota…</strong><span>Conectando ao painel de controle.</span></div>`;
 }
 
 function updateStatsStrip(chargers) {
-  const strip = document.getElementById("stats-strip");
+  const strip = $("stats-strip");
   const total = chargers.length;
   const online = chargers.filter((c) => c.online).length;
   const charging = chargers.filter((c) => c.online && c.status === "charging").length;
@@ -1460,13 +1466,13 @@ function syncGrid(chargers) {
     if (historyMode === "single" && historyViewChargeId !== chargerBeforeSync) startHistoryViewPolling();
   }
 
-  const grid = document.getElementById("grid");
+  const grid = $("grid");
   if (chargers.length === 0) {
     // Frota vazia: sempre mostra o empty-state no #grid, mesmo em modo
     // tabela — não faria sentido mostrar uma tabela com só cabeçalho;
     // a mensagem de "como adicionar" é mais útil que linhas vazias.
     grid.hidden = false;
-    document.getElementById("dense-table-wrap").hidden = true;
+    $("dense-table-wrap").hidden = true;
     renderEmptyState(false);
     updateBulkCountLabel();
     return;
@@ -1482,13 +1488,13 @@ function syncGrid(chargers) {
   // usuário volta pro modo card (ver applyViewMode).
   if (viewMode === "table") {
     grid.hidden = true;
-    document.getElementById("dense-table-wrap").hidden = false;
+    $("dense-table-wrap").hidden = false;
     renderTable(chargers);
     updateBulkCountLabel();
     return;
   }
   grid.hidden = false;
-  document.getElementById("dense-table-wrap").hidden = true;
+  $("dense-table-wrap").hidden = true;
 
   const sorted = sortChargers(chargers, currentSort);
   const seen = new Set();
@@ -1544,8 +1550,8 @@ async function refresh() {
 let eventSource = null;
 
 function setSseIndicator(connected) {
-  const dot = document.getElementById("sse-dot");
-  const label = document.getElementById("link-status-label");
+  const dot = $("sse-dot");
+  const label = $("link-status-label");
   if (!dot) return;
   dot.classList.toggle("connected", connected);
   dot.title = connected ? "Atualização ao vivo (SSE conectado)" : "Reconectando ao painel...";
@@ -1573,14 +1579,14 @@ function connectEventStream() {
   };
 }
 
-document.getElementById("add-charger-btn").addEventListener("click", addCharger);
-document.getElementById("new-charger-id").addEventListener("keydown", (e) => {
+$("add-charger-btn").addEventListener("click", addCharger);
+$("new-charger-id").addEventListener("keydown", (e) => {
   if (e.key === "Enter") addCharger();
 });
-document.getElementById("import-file-btn").addEventListener("click", () => {
-  document.getElementById("import-file-input").click();
+$("import-file-btn").addEventListener("click", () => {
+  $("import-file-input").click();
 });
-document.getElementById("import-file-input").addEventListener("change", async (e) => {
+$("import-file-input").addEventListener("change", async (e) => {
   const file = e.target.files[0];
   if (file) await importChargersFromFile(file);
   // Zera o input — sem isso, escolher o MESMO arquivo de novo em
@@ -1589,11 +1595,11 @@ document.getElementById("import-file-input").addEventListener("change", async (e
   // silenciosamente sem efeito.
   e.target.value = "";
 });
-document.getElementById("add-advanced-toggle").addEventListener("click", () => {
-  const row = document.getElementById("advanced-add-row");
+$("add-advanced-toggle").addEventListener("click", () => {
+  const row = $("advanced-add-row");
   row.hidden = !row.hidden;
 });
-document.getElementById("search-input").addEventListener("input", (e) => {
+$("search-input").addEventListener("input", (e) => {
   currentFilter = e.target.value.trim().toLowerCase();
   if (viewMode === "table") {
     renderTable(lastChargers);
@@ -1604,26 +1610,26 @@ document.getElementById("search-input").addEventListener("input", (e) => {
   }
   updateBulkCountLabel();
 });
-document.getElementById("sort-select").addEventListener("change", (e) => {
+$("sort-select").addEventListener("change", (e) => {
   currentSort = e.target.value;
   syncGrid(lastChargers); // reordena na hora, sem esperar o próximo evento do SSE
 });
-document.getElementById("view-mode-cards").addEventListener("click", () => applyViewMode("cards"));
-document.getElementById("view-mode-table").addEventListener("click", () => applyViewMode("table"));
-document.getElementById("token-btn").addEventListener("click", promptForToken);
-document.getElementById("theme-toggle-btn").addEventListener("click", toggleTheme);
-document.getElementById("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
+$("view-mode-cards").addEventListener("click", () => applyViewMode("cards"));
+$("view-mode-table").addEventListener("click", () => applyViewMode("table"));
+$("token-btn").addEventListener("click", promptForToken);
+$("theme-toggle-btn").addEventListener("click", toggleTheme);
+$("bulk-fault-select").innerHTML = buildFaultOptions(FAULT_CODES[0]);
 
 document.querySelectorAll(".view-tab").forEach((btn) => {
   btn.addEventListener("click", () => setActiveView(btn.dataset.view));
 });
-document.getElementById("history-charger-select").addEventListener("change", (e) => {
+$("history-charger-select").addEventListener("change", (e) => {
   selectHistoryCharger(e.target.value);
 });
-document.getElementById("history-mode-single").addEventListener("click", () => setHistoryMode("single"));
-document.getElementById("history-mode-compare").addEventListener("click", () => setHistoryMode("compare"));
-document.getElementById("history-compare-metric-select").innerHTML = buildMetricOptions(compareMetric);
-document.getElementById("history-compare-metric-select").addEventListener("change", (e) => {
+$("history-mode-single").addEventListener("click", () => setHistoryMode("single"));
+$("history-mode-compare").addEventListener("click", () => setHistoryMode("compare"));
+$("history-compare-metric-select").innerHTML = buildMetricOptions(compareMetric);
+$("history-compare-metric-select").addEventListener("change", (e) => {
   compareMetric = e.target.value;
   fetchAndRenderCompare();
 });
@@ -1631,20 +1637,20 @@ document.getElementById("history-compare-metric-select").addEventListener("chang
 // checkbox) — a lista inteira é reconstruída via innerHTML sempre que
 // o conjunto de chargers muda (ver populateCompareList), então
 // listeners individuais seriam perdidos a cada reconstrução.
-document.getElementById("history-compare-list").addEventListener("change", (e) => {
+$("history-compare-list").addEventListener("change", (e) => {
   const input = e.target.closest("input[type=checkbox]");
   if (input) toggleCompareCharger(input.value, input.checked);
 });
-document.getElementById("history-prev-btn").addEventListener("click", () => {
-  const select = document.getElementById("history-charger-select");
+$("history-prev-btn").addEventListener("click", () => {
+  const select = $("history-charger-select");
   const options = Array.from(select.options);
   if (options.length === 0) return;
   const i = options.findIndex((o) => o.value === historyViewChargeId);
   const next = options[(i - 1 + options.length) % options.length];
   selectHistoryCharger(next.value);
 });
-document.getElementById("history-next-btn").addEventListener("click", () => {
-  const select = document.getElementById("history-charger-select");
+$("history-next-btn").addEventListener("click", () => {
+  const select = $("history-charger-select");
   const options = Array.from(select.options);
   if (options.length === 0) return;
   const i = options.findIndex((o) => o.value === historyViewChargeId);
@@ -1661,7 +1667,7 @@ const bulkFaultBtn = qr(document, "bulk-fault");
 const bulkClearBtn = qr(document, "bulk-clear");
 
 bulkStartBtn.addEventListener("click", () => {
-  const idTag = document.getElementById("bulk-id-tag").value.trim() || "LOCAL_TAG";
+  const idTag = $("bulk-id-tag").value.trim() || "LOCAL_TAG";
   sendBulkCommand("start", { args: [idTag], button: bulkStartBtn });
 });
 bulkStopBtn.addEventListener("click", () =>
@@ -1679,7 +1685,7 @@ bulkDisconnectBtn.addEventListener("click", () =>
     confirmMessage: "Desconectar TODOS os chargers visíveis? Cada um reconecta sozinho em seguida, mas as conexões atuais serão encerradas agora.",
   }));
 bulkFaultBtn.addEventListener("click", () => {
-  const code = document.getElementById("bulk-fault-select").value;
+  const code = $("bulk-fault-select").value;
   sendBulkCommand("fault", {
     args: [code],
     button: bulkFaultBtn,
