@@ -402,15 +402,11 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 self._send_json({"error": "not found"}, status=404)
                 return
             charge_point_id = urllib.parse.unquote(self.path[len(prefix):])
-            try:
-                future = asyncio.run_coroutine_threadsafe(remove(charge_point_id), loop)
-                message = future.result(timeout=15)
-                self._send_json({"ok": True, "message": message})
-            except ValueError as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=404)
-            except Exception as exc:
-                logger.exception(f"[PAINEL] erro removendo charger '{charge_point_id}'")
-                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+            self._respond_from_coro(
+                remove(charge_point_id),
+                error_log=f"[PAINEL] erro removendo charger '{charge_point_id}'",
+                error_status=404,
+            )
 
         def _read_json_body(self):
             length = int(self.headers.get("Content-Length", 0))
@@ -426,6 +422,70 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
                 )
             return json.loads(self.rfile.read(length) or b"{}")
 
+        def _parse_body_or_error(self):
+            """
+            Wrapper de _read_json_body() reaproveitado por todo handler
+            de POST — antes cada um repetia o mesmo par de except
+            (payload grande demais / JSON inválido) com a mesma
+            mensagem e status code. Retorna o payload (dict) em caso de
+            sucesso, ou None já com a resposta de erro enviada — o
+            chamador só precisa checar `if payload is None: return`.
+            """
+            try:
+                return self._read_json_body()
+            except _PayloadTooLarge as exc:
+                self._send_json({"ok": False, "message": str(exc)}, status=413)
+            except (ValueError, json.JSONDecodeError) as exc:
+                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
+            return None
+
+        def _charger_or_404(self, charge_point_id):
+            """
+            Busca charge_point_id no registry; se não estiver conectado,
+            já envia o 404 padrão e retorna None — mesmo padrão de
+            _parse_body_or_error (chamador só checa `if cp is None`).
+            """
+            cp = registry.get(charge_point_id)
+            if cp is None:
+                self._send_json(
+                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
+                    status=404,
+                )
+            return cp
+
+        def _respond_from_coro(self, coro, error_log, timeout=15, error_status=400, catch_value_error=True):
+            """
+            Roda uma corrotina no event loop principal (thread diferente
+            desta ThreadingHTTPServer, ver run_coroutine_threadsafe) e
+            traduz o resultado numa resposta JSON — mesmo padrão repetido
+            em todo handler que delega pra um EVChargerSim ou pro
+            orchestrator: sucesso vira {"ok": True, "message": ...}.
+
+            catch_value_error=True (padrão): ValueError (erro de
+            validação, já com mensagem pronta pro toast — ver
+            apply_chaos_overrides/apply_power_overrides/spawn) vira
+            `error_status` SEM log; qualquer outra exceção vira 500 COM
+            log completo (exc_info). catch_value_error=False (usado só
+            por _handle_command, cujo execute_command() nunca levanta
+            ValueError) trata TUDO como exceção inesperada — sempre 500,
+            sempre logado — preservando o comportamento original desse
+            handler específico à risca, em vez de assumir que os dois
+            casos são equivalentes.
+            """
+            try:
+                future = asyncio.run_coroutine_threadsafe(coro, loop)
+                message = future.result(timeout=timeout)
+                self._send_json({"ok": True, "message": message})
+            except ValueError as exc:
+                if not catch_value_error:
+                    logger.exception(error_log)
+                    self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+                    return
+                self._send_json({"ok": False, "message": str(exc)}, status=error_status)
+            except Exception as exc:
+                logger.exception(error_log)
+                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+
         def _handle_add_charger(self):
             """
             POST /api/chargers — {"charge_point_id": "CH01", ...overrides}.
@@ -434,25 +494,15 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             CHARGER_OVERRIDE_FIELDS, validada dentro de spawn() —
             ValueError aqui já chega com uma mensagem pronta pro toast).
             """
-            try:
-                payload = self._read_json_body()
-            except _PayloadTooLarge as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=413)
-                return
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
+            payload = self._parse_body_or_error()
+            if payload is None:
                 return
             charge_point_id = payload.get("charge_point_id")
             overrides = {k: v for k, v in payload.items() if k != "charge_point_id"} or None
-            try:
-                future = asyncio.run_coroutine_threadsafe(spawn(charge_point_id, overrides), loop)
-                message = future.result(timeout=15)
-                self._send_json({"ok": True, "message": message})
-            except ValueError as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=400)
-            except Exception as exc:
-                logger.exception(f"[PAINEL] erro adicionando charger '{charge_point_id}'")
-                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+            self._respond_from_coro(
+                spawn(charge_point_id, overrides),
+                error_log=f"[PAINEL] erro adicionando charger '{charge_point_id}'",
+            )
 
         def _handle_set_chaos(self):
             """
@@ -464,34 +514,18 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             aqui; este handler só cuida de parsing/roteamento/resposta,
             no mesmo padrão dos outros handlers de POST.
             """
-            try:
-                payload = self._read_json_body()
-            except _PayloadTooLarge as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=413)
+            payload = self._parse_body_or_error()
+            if payload is None:
                 return
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
-                return
-
             prefix, suffix = "/api/chargers/", "/chaos"
             charge_point_id = urllib.parse.unquote(self.path[len(prefix):-len(suffix)])
-            cp = registry.get(charge_point_id)
+            cp = self._charger_or_404(charge_point_id)
             if cp is None:
-                self._send_json(
-                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
-                    status=404,
-                )
                 return
-
-            try:
-                future = asyncio.run_coroutine_threadsafe(cp.apply_chaos_overrides(payload), loop)
-                message = future.result(timeout=15)
-                self._send_json({"ok": True, "message": message})
-            except ValueError as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=400)
-            except Exception as exc:
-                logger.exception(f"[PAINEL] erro ajustando chaos de '{charge_point_id}'")
-                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+            self._respond_from_coro(
+                cp.apply_chaos_overrides(payload),
+                error_log=f"[PAINEL] erro ajustando chaos de '{charge_point_id}'",
+            )
 
         def _handle_set_phases(self):
             """
@@ -504,69 +538,38 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             validação de valor vivem em EVChargerSim.apply_power_overrides(),
             não aqui.
             """
-            try:
-                payload = self._read_json_body()
-            except _PayloadTooLarge as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=413)
+            payload = self._parse_body_or_error()
+            if payload is None:
                 return
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
-                return
-
             prefix, suffix = "/api/chargers/", "/phases"
             charge_point_id = urllib.parse.unquote(self.path[len(prefix):-len(suffix)])
-            cp = registry.get(charge_point_id)
+            cp = self._charger_or_404(charge_point_id)
             if cp is None:
-                self._send_json(
-                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
-                    status=404,
-                )
                 return
-
-            try:
-                future = asyncio.run_coroutine_threadsafe(cp.apply_power_overrides(payload), loop)
-                message = future.result(timeout=15)
-                self._send_json({"ok": True, "message": message})
-            except ValueError as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=400)
-            except Exception as exc:
-                logger.exception(f"[PAINEL] erro ajustando fases de '{charge_point_id}'")
-                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+            self._respond_from_coro(
+                cp.apply_power_overrides(payload),
+                error_log=f"[PAINEL] erro ajustando fases de '{charge_point_id}'",
+            )
 
         def _handle_command(self):
-            try:
-                payload = self._read_json_body()
-            except _PayloadTooLarge as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=413)
+            payload = self._parse_body_or_error()
+            if payload is None:
                 return
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
-                return
-
             charge_point_id = payload.get("charge_point_id")
             cmd = (payload.get("cmd") or "").lower()
             args = payload.get("args") or []
-            cp = registry.get(charge_point_id)
+            cp = self._charger_or_404(charge_point_id)
             if cp is None:
-                self._send_json(
-                    {"ok": False, "message": f"charger '{charge_point_id}' não conectado ainda"},
-                    status=404,
-                )
                 return
-
             # A instância EVChargerSim vive no event loop principal
             # (thread diferente desta ThreadingHTTPServer) — precisa
             # atravessar pra lá via run_coroutine_threadsafe e esperar o
             # resultado de forma síncrona (.result()) antes de responder.
-            try:
-                future = asyncio.run_coroutine_threadsafe(
-                    cp.execute_command(cmd, args), loop
-                )
-                message = future.result(timeout=15)
-                self._send_json({"ok": True, "message": message})
-            except Exception as exc:
-                logger.exception(f"[PAINEL] erro executando comando '{cmd}' em '{charge_point_id}'")
-                self._send_json({"ok": False, "message": f"erro: {exc!r}"}, status=500)
+            self._respond_from_coro(
+                cp.execute_command(cmd, args),
+                error_log=f"[PAINEL] erro executando comando '{cmd}' em '{charge_point_id}'",
+                catch_value_error=False,
+            )
 
         def _handle_command_all(self):
             """
@@ -578,13 +581,8 @@ def _make_control_handler(registry: dict, loop: asyncio.AbstractEventLoop, logge
             independente dos demais — ver broadcast_command() em
             orchestrator.main().
             """
-            try:
-                payload = self._read_json_body()
-            except _PayloadTooLarge as exc:
-                self._send_json({"ok": False, "message": str(exc)}, status=413)
-                return
-            except (ValueError, json.JSONDecodeError) as exc:
-                self._send_json({"ok": False, "message": f"corpo inválido: {exc}"}, status=400)
+            payload = self._parse_body_or_error()
+            if payload is None:
                 return
 
             cmd = (payload.get("cmd") or "").lower()
